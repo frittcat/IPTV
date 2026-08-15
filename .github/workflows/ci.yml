@@ -25,11 +25,7 @@ jobs:
       - run: pip install -r requirements.txt
       - run: python -m pytest -q
       - run: python -m compileall -q backend providers
-      - run: python - <<'PY'
-          import xml.etree.ElementTree as ET
-          ET.fromstring('<tv><channel id="x"><display-name>x</display-name></channel></tv>')
-          print('xml validation ok')
-        shell: bash
+      - run: python -c "import xml.etree.ElementTree as ET; ET.fromstring('<tv><channel id=\"x\"><display-name>x</display-name></channel></tv>'); print('xml validation ok')"
   docker:
     runs-on: ubuntu-latest
     steps:
