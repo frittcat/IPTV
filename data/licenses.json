@@ -1,0 +1,5 @@
+{
+  "policy": "Only publish remote VOD when reuse and redistribution are permitted",
+  "accepted_license_families": ["Public Domain", "CC0", "CC BY", "CC BY-SA"],
+  "items": []
+}

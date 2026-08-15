@@ -1,0 +1,39 @@
+project:
+  name: FamilyStream Hub
+  version: 0.1.0
+countries:
+  priority: [BR, FR, PT]
+languages: [por, fra, eng, spa, ita, deu]
+categories: [general, news, sports, movies, series, kids, documentary, music, culture, education, science, travel, weather]
+adult_content: false
+publishing:
+  minimum_quality_score: 60
+geo_blocked:
+  keep_metadata: true
+  publish: false
+health_check:
+  healthy_interval_hours: 6
+  problem_retry_minutes: 30
+sync:
+  source_interval_hours: 24
+sources:
+  - id: iptv-org-api
+    name: IPTV-org API
+    type: api
+    country: INTERNATIONAL
+    channels: https://iptv-org.github.io/api/channels.json
+    streams: https://iptv-org.github.io/api/streams.json
+    feeds: https://iptv-org.github.io/api/feeds.json
+    logos: https://iptv-org.github.io/api/logos.json
+    guides: https://iptv-org.github.io/api/guides.json
+    blocklist: https://iptv-org.github.io/api/blocklist.json
+  - id: iptv-org-playlist
+    name: IPTV-org playlists
+    type: m3u
+    country: INTERNATIONAL
+    url: https://iptv-org.github.io/iptv/index.m3u
+  - id: free-tv
+    name: Free-TV IPTV
+    type: m3u
+    country: INTERNATIONAL
+    url: https://raw.githubusercontent.com/Free-TV/IPTV/master/playlist.m3u8

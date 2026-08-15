@@ -1,0 +1,47 @@
+services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-familystream}
+      POSTGRES_USER: ${POSTGRES_USER:-familystream}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-change-me}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-familystream} -d ${POSTGRES_DB:-familystream}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  backend:
+    build: .
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-familystream}:${POSTGRES_PASSWORD:-change-me}@db:5432/${POSTGRES_DB:-familystream}
+      HOST_COUNTRY: ${HOST_COUNTRY:-FR}
+      PUBLISH_MIN_SCORE: ${PUBLISH_MIN_SCORE:-60}
+      ADULT_CONTENT: ${ADULT_CONTENT:-false}
+      DISPATCHARR_URL: ${DISPATCHARR_URL:-http://dispatcharr:9191}
+      JELLYFIN_URL: ${JELLYFIN_URL:-}
+      JELLYFIN_API_KEY: ${JELLYFIN_API_KEY:-}
+    ports:
+      - "${BACKEND_PORT:-8080}:8080"
+    volumes:
+      - ./config:/app/config:ro
+      - ./data:/app/data
+    depends_on:
+      db:
+        condition: service_healthy
+
+  dispatcharr:
+    image: ghcr.io/dispatcharr/dispatcharr:latest
+    restart: unless-stopped
+    ports:
+      - "${DISPATCHARR_PORT:-9191}:9191"
+    volumes:
+      - dispatcharr_data:/data
+
+volumes:
+  postgres_data:
+  dispatcharr_data:
