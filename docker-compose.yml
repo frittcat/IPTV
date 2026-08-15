@@ -25,8 +25,30 @@ services:
       DISPATCHARR_URL: ${DISPATCHARR_URL:-http://dispatcharr:9191}
       JELLYFIN_URL: ${JELLYFIN_URL:-}
       JELLYFIN_API_KEY: ${JELLYFIN_API_KEY:-}
+      FAMILYSTREAM_PUBLIC_URL: ${FAMILYSTREAM_PUBLIC_URL:-http://localhost:8080}
+      ADMIN_USERNAME: ${ADMIN_USERNAME:-admin}
+      ADMIN_PASSWORD_HASH: ${ADMIN_PASSWORD_HASH:-}
+      XTREAM_URL: ${XTREAM_URL:-}
+      XTREAM_USERNAME: ${XTREAM_USERNAME:-}
+      XTREAM_PASSWORD: ${XTREAM_PASSWORD:-}
     ports:
       - "${BACKEND_PORT:-8080}:8080"
+    volumes:
+      - ./config:/app/config:ro
+      - ./data:/app/data
+    depends_on:
+      db:
+        condition: service_healthy
+
+  scheduler:
+    build: .
+    restart: unless-stopped
+    command: ["python", "scripts/scheduler.py"]
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-familystream}:${POSTGRES_PASSWORD:-change-me}@db:5432/${POSTGRES_DB:-familystream}
+      FAMILYSTREAM_PUBLIC_URL: ${FAMILYSTREAM_PUBLIC_URL:-http://localhost:8080}
+      PUBLISH_MIN_SCORE: ${PUBLISH_MIN_SCORE:-60}
+      ADMIN_PASSWORD_HASH: ${ADMIN_PASSWORD_HASH:-}
     volumes:
       - ./config:/app/config:ro
       - ./data:/app/data

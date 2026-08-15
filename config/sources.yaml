@@ -16,6 +16,24 @@ health_check:
   problem_retry_minutes: 30
 sync:
   source_interval_hours: 24
+vod:
+  enabled: true
+  sync_interval_hours: 6
+  proxy_enabled: true
+  permanent_video_cache: false
+  rights_allowlist: [Public Domain, CC0, CC BY, CC BY-SA]
+  providers:
+    archive_org:
+      enabled: true
+      collections: [feature_films, opensource_movies]
+    wikimedia_commons:
+      enabled: true
+    nasa:
+      enabled: true
+metadata:
+  tmdb:
+    enabled: false
+    token_from_env: TMDB_API_TOKEN
 sources:
   - id: iptv-org-api
     name: IPTV-org API
@@ -37,3 +55,4 @@ sources:
     type: m3u
     country: INTERNATIONAL
     url: https://raw.githubusercontent.com/Free-TV/IPTV/master/playlist.m3u8
+vod_sources: []

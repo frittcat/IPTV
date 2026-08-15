@@ -2,6 +2,9 @@ from __future__ import annotations
 
 import hashlib
 import json
+import ipaddress
+import socket
+import xml.etree.ElementTree as ET
 from concurrent.futures import ThreadPoolExecutor
 
 import os
@@ -15,9 +18,10 @@ from urllib.parse import urlparse
 
 import httpx
 import yaml
-from fastapi import FastAPI, HTTPException, Query
-from fastapi.responses import FileResponse, PlainTextResponse
+from fastapi import Depends, FastAPI, HTTPException, Query, Request
+from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
+from backend.security import require_admin
 
 ROOT = Path(__file__).resolve().parents[1]
 DATA = ROOT / "data"
@@ -27,6 +31,15 @@ MIN_SCORE = int(os.getenv("PUBLISH_MIN_SCORE", "60"))
 
 app = FastAPI(title="FamilyStream Hub", version="0.1.0")
 app.mount("/admin", StaticFiles(directory=ROOT / "frontend", html=True), name="admin")
+
+@app.middleware("http")
+async def protect_admin(request: Request, call_next):
+    if request.url.path.startswith("/admin"):
+        try:
+            require_admin(request)
+        except HTTPException as exc:
+            return JSONResponse({"detail": exc.detail}, status_code=exc.status_code, headers=exc.headers or {})
+    return await call_next(request)
 
 API_URLS = {
     "channels": "https://iptv-org.github.io/api/channels.json",
@@ -53,8 +66,16 @@ def db_connect():
 def db_execute(sql: str, params: tuple = (), fetch: bool = False):
     is_pg = not DB_URL.startswith("sqlite")
     if is_pg:
-        sql = sql.replace("?", "%s").replace("INSERT OR REPLACE INTO", "INSERT INTO")
-        if sql.lstrip().upper().startswith("INSERT INTO") and "ON CONFLICT" not in sql.upper():
+        sql = sql.replace("?", "%s")
+        match = re.match(r"\s*INSERT OR REPLACE INTO (\w+)\(([^)]+)\) VALUES\(([^)]+)\)", sql, re.I)
+        if match:
+            table, columns, _values = match.groups()
+            cols = [x.strip() for x in columns.split(",")]
+            key = cols[0]
+            updates = ", ".join(f"{col}=EXCLUDED.{col}" for col in cols[1:])
+            sql = re.sub(r"INSERT OR REPLACE INTO", "INSERT INTO", sql, count=1, flags=re.I)
+            sql += f" ON CONFLICT ({key}) DO UPDATE SET {updates}"
+        elif sql.lstrip().upper().startswith("INSERT INTO") and "ON CONFLICT" not in sql.upper():
             sql += " ON CONFLICT DO NOTHING"
     conn = db_connect()
     try:
@@ -83,6 +104,14 @@ def init_db():
             if not DB_URL.startswith("sqlite"):
                 stmt = stmt.replace("INTEGER PRIMARY KEY AUTOINCREMENT", "BIGSERIAL PRIMARY KEY")
             cur.execute(stmt)
+        migration = ROOT / "migrations" / "002_v0_2.sql"
+        if migration.exists():
+            for stmt in migration.read_text(encoding="utf-8").split(";"):
+                stmt = stmt.strip()
+                if stmt:
+                    if not DB_URL.startswith("sqlite"):
+                        stmt = stmt.replace("INTEGER PRIMARY KEY AUTOINCREMENT", "BIGSERIAL PRIMARY KEY")
+                    cur.execute(stmt)
         conn.commit()
     finally:
         conn.close()
@@ -109,9 +138,23 @@ def score(stream: dict[str, Any]) -> float:
     return max(0, min(100, value))
 
 
-def safe_url(url: str) -> bool:
+def safe_url(url: str, trusted: bool = False) -> bool:
     p = urlparse(url)
-    return p.scheme in {"http", "https"} and bool(p.netloc) and p.hostname not in {"localhost", "127.0.0.1", "::1"}
+    if p.scheme not in {"http", "https"} or not p.hostname:
+        return False
+    if trusted:
+        return True
+    host = p.hostname.strip("[]").lower()
+    if host in {"localhost", "metadata.google.internal", "metadata", "169.254.169.254"}:
+        return False
+    try:
+        addresses = {ipaddress.ip_address(host)}
+    except ValueError:
+        try:
+            addresses = {ipaddress.ip_address(x[4][0]) for x in socket.getaddrinfo(host, p.port or 443, type=socket.SOCK_STREAM)}
+        except OSError:
+            return False
+    return all(not (ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved or ip.is_unspecified) for ip in addresses)
 
 
 @app.on_event("startup")
@@ -158,8 +201,9 @@ def channels(q: str = Query(""), country: str = Query(""), category: str = Query
     return [dict(zip(["id","name","country","categories","logo","published"], r)) for r in rows]
 
 
-@app.get("/api/sync")
-def sync():
+@app.post("/api/sync")
+@app.post("/api/v1/live/sync")
+def sync(_admin: str = Depends(require_admin)):
     init_db()
     started = now()
     try:
@@ -187,6 +231,26 @@ def sync():
             sc = score(s)
             db_execute("INSERT OR REPLACE INTO streams(id,channel_id,feed,title,url,referrer,user_agent,quality,label,source,status,score,last_checked) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)", (sid,cid,s.get("feed"),s.get("title"),s.get("url"),s.get("referrer"),s.get("user_agent"),s.get("quality"),s.get("label"),"iptv-org", "new", sc, now()))
             count += 1
+        # Free-TV is an independent live source; map it to known channels by normalized name.
+        try:
+            free_text = httpx.get(FREE_TV_URL, timeout=60, follow_redirects=True, headers={"User-Agent":"FamilyStream-Hub/0.2"}).raise_for_status().text
+            channel_rows = db_execute("SELECT id,name FROM channels", fetch=True)
+            name_map = {norm(name): cid for cid, name in channel_rows}
+            current = {}
+            for line in free_text.splitlines():
+                line = line.strip()
+                if line.startswith("#EXTINF"):
+                    attrs = dict(re.findall(r'(\w[\w-]*)="([^"]*)"', line))
+                    current = {"name": line.split(",",1)[1].strip() if "," in line else attrs.get("tvg-name", ""), "attrs": attrs}
+                elif line and not line.startswith("#") and current:
+                    cid = name_map.get(norm(current["name"]))
+                    if cid and safe_url(line):
+                        sid = hashlib.sha1((cid + "|free-tv|" + line).encode()).hexdigest()
+                        attrs = current["attrs"]
+                        db_execute("INSERT INTO streams(id,channel_id,feed,title,url,referrer,user_agent,quality,label,source,status,score,last_checked) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET url=excluded.url,title=excluded.title,quality=excluded.quality,label=excluded.label,source=excluded.source,last_checked=excluded.last_checked", (sid,cid,attrs.get("tvg-id"),current["name"],line,attrs.get("http-referrer"),attrs.get("http-user-agent"),attrs.get("quality"),None,"free-tv","new",score({"url":line,"quality":attrs.get("quality")}),now()))
+                    current = {}
+        except httpx.HTTPError:
+            pass
         stream_channel_ids = {s.get("channel") for s in payload["streams"] if s.get("channel")}
         seen_guides = set()
         for e in payload["guides"]:
@@ -198,7 +262,7 @@ def sync():
                 continue
             db_execute("INSERT OR REPLACE INTO epg_sources(channel_id,feed,site,site_id,source_url,updated_at) VALUES(?,?,?,?,?,?)", (cid,e.get("feed"),e.get("site"),e.get("site_id"),src.get("url"),now()))
             seen_guides.add(cid)
-        db_execute("UPDATE channels SET published=1 WHERE id IN (SELECT channel_id FROM streams WHERE score>=? GROUP BY channel_id)", (MIN_SCORE,))
+        db_execute("UPDATE channels SET published=CASE WHEN id IN (SELECT channel_id FROM streams WHERE score>=? AND status IN ('healthy','degraded') GROUP BY channel_id) THEN 1 ELSE 0 END", (MIN_SCORE,))
         db_execute("UPDATE streams SET primary_stream=0")
         db_execute("UPDATE streams SET primary_stream=1 WHERE id IN (SELECT id FROM streams s WHERE score=(SELECT MAX(score) FROM streams s2 WHERE s2.channel_id=s.channel_id))")
         finished = now()
@@ -212,24 +276,46 @@ def sync():
 
 def export_files():
     DATA.mkdir(exist_ok=True)
-    rows = db_execute("SELECT c.id,c.name,c.country,c.categories,c.logo,s.url,s.referrer,s.user_agent FROM channels c JOIN streams s ON s.channel_id=c.id WHERE c.published=1 AND s.score>=? ORDER BY c.country,c.name,s.score DESC", (MIN_SCORE,), True)
+    rows = db_execute("SELECT c.id,c.name,c.country,c.categories,c.logo,s.url,s.referrer,s.user_agent FROM channels c JOIN streams s ON s.channel_id=c.id WHERE c.published=1 AND s.status IN ('healthy','degraded') AND s.score>=? ORDER BY c.country,c.name,s.score DESC", (MIN_SCORE,), True)
     seen, lines = set(), ["#EXTM3U"]
     for r in rows:
         if r[0] in seen: continue
-        seen.add(r[0]); attrs = f'tvg-id="{r[0]}" tvg-name="{r[1]}" tvg-country="{r[2] or ""}" group-title="{r[3] or "general"}"'
-        if r[7]: attrs += f' http-user-agent="{r[7]}"'
-        if r[6]: attrs += f' http-referrer="{r[6]}"'
-        lines += [f"#EXTINF:-1 {attrs},{r[1]}", r[5]]
+        seen.add(r[0])
+        cats = []
+        try: cats = json.loads(r[3] or "[]")
+        except (TypeError, json.JSONDecodeError): pass
+        group = " | ".join(x.replace("_", " ").title() for x in cats[:2]) or "General"
+        group = f"{r[2] or 'International'} | {group}"
+        attrs = {"tvg-id": r[0], "tvg-name": r[1], "tvg-country": r[2] or "", "group-title": group}
+        if r[4]: attrs["tvg-logo"] = r[4]
+        attr_text = " ".join(f'{k}="{str(v).replace(chr(34), chr(39))}"' for k,v in attrs.items())
+        if r[7]: attr_text += f' http-user-agent="{r[7].replace(chr(34), chr(39))}"'
+        if r[6]: attr_text += f' http-referrer="{r[6].replace(chr(34), chr(39))}"'
+        stable_base = os.getenv("FAMILYSTREAM_PUBLIC_URL", "http://localhost:8080")
+        lines += [f"#EXTINF:-1 {attr_text},{r[1]}", f"{stable_base}/live/stream/{r[0]}"]
     (DATA / "family-tv.m3u").write_text("\n".join(lines) + "\n", encoding="utf-8")
-    channels_xml = []
+    root = ET.Element("tv", {"generator-info-name": "FamilyStream Hub"})
+    emitted = set()
     for r in rows:
-        if r[0] in {x[0] for x in channels_xml}: continue
-        channels_xml.append((r[0], r[1], r[8] if len(r)>8 else None))
-    programmes = []
-    xml = ['<?xml version="1.0" encoding="UTF-8"?>', '<tv generator-info-name="FamilyStream Hub">']
-    for cid, name, _ in channels_xml: xml.append(f'  <channel id="{cid}"><display-name>{name}</display-name></channel>')
-    xml.append('</tv>')
-    (DATA / "family-tv.xml").write_text("\n".join(xml) + "\n", encoding="utf-8")
+        if r[0] in emitted: continue
+        emitted.add(r[0]); node = ET.SubElement(root, "channel", {"id": r[0]}); ET.SubElement(node, "display-name").text = r[1]
+    # Import a bounded number of provider programmes and keep the rest as guide sources.
+    epg_rows = db_execute("SELECT channel_id,source_url FROM epg_sources WHERE source_url IS NOT NULL LIMIT 100", fetch=True)
+    for cid, source_url in epg_rows:
+        try:
+            text = httpx.get(source_url, timeout=10, follow_redirects=True, headers={"User-Agent":"FamilyStream-Hub/0.2"}).text
+            parsed = ET.fromstring(text)
+            for programme in parsed.findall("programme")[:500]:
+                if programme.attrib.get("channel") not in {x[0] for x in emitted}: continue
+                attrs = {k: v for k,v in programme.attrib.items() if k in {"start","stop","channel"}}
+                out = ET.SubElement(root, "programme", attrs)
+                for tag in ("title","sub-title","desc","category","episode-num","icon"):
+                    child = programme.find(tag)
+                    if child is not None:
+                        copy = ET.SubElement(out, tag, child.attrib); copy.text = child.text
+        except (httpx.HTTPError, ET.ParseError, ValueError):
+            continue
+    ET.ElementTree(root).write(DATA / "family-tv.xml", encoding="utf-8", xml_declaration=True)
 
 
 @app.get("/family-tv.m3u", response_class=PlainTextResponse)
@@ -261,6 +347,7 @@ def health_check(limit: int = Query(20, ge=1, le=100)):
                 pass
             db_execute("UPDATE streams SET status=?,last_checked=?,last_success=CASE WHEN ?=1 THEN ? ELSE last_success END,failure_count=CASE WHEN ?=1 THEN 0 ELSE failure_count+1 END WHERE id=?", (status, now(), int(ok), now(), int(ok), sid))
             results.append({"id": sid, "status": status})
+    db_execute("UPDATE channels SET published=CASE WHEN id IN (SELECT channel_id FROM streams WHERE status IN ('healthy','degraded') AND score>=? GROUP BY channel_id) THEN 1 ELSE 0 END", (MIN_SCORE,))
     export_files()
     return {"checked": len(results), "results": results}
 
@@ -277,3 +364,127 @@ def report():
 @app.get("/", response_class=FileResponse)
 def root():
     return FileResponse(ROOT / "frontend" / "index.html")
+
+
+# ---- v0.2 VOD ----
+from providers.base import VODItem
+from providers.archive_org import ArchiveOrgProvider
+from providers.public_media import WikimediaProvider, NASAProvider
+from providers.service import generate_strm, item_key, upsert_vod_item
+
+FREE_TV_URL = "https://raw.githubusercontent.com/Free-TV/IPTV/master/playlist.m3u8"
+
+
+def vod_provider_items(provider: str, limit: int = 10):
+    if provider == "archive_org": return ArchiveOrgProvider(rows=min(limit, 50)).discover(pages=1)
+    if provider == "wikimedia_commons": return WikimediaProvider().discover(limit=limit)
+    if provider == "nasa": return NASAProvider().discover(limit=limit)
+    raise HTTPException(400, "provider must be archive_org, wikimedia_commons or nasa")
+
+
+@app.post("/api/v1/vod/sync")
+def vod_sync(provider: str = Query("archive_org"), limit: int = Query(10, ge=1, le=100), _admin: str = Depends(require_admin)):
+    init_db(); started = now(); count = 0; approved = 0
+    try:
+        for item in vod_provider_items(provider, limit):
+            if not item.stream_url or not safe_url(item.stream_url):
+                continue
+            vid = upsert_vod_item(db_execute, item)
+            if item.rights_status == "approved":
+                generate_strm(item, vid, DATA / "vod", os.getenv("FAMILYSTREAM_PUBLIC_URL", "http://localhost:8080")); approved += 1
+            count += 1
+        db_execute("INSERT INTO vod_sync_runs(provider_id,started_at,finished_at,new_items) VALUES(?,?,?,?)", (provider, started, now(), count))
+        return {"status":"ok", "provider":provider, "items":count, "rights_approved":approved}
+    except Exception as exc:
+        db_execute("INSERT INTO vod_sync_runs(provider_id,started_at,finished_at,error) VALUES(?,?,?,?)", (provider, started, now(), str(exc)))
+        raise HTTPException(502, f"vod sync failed: {exc}")
+
+
+@app.get("/api/v1/vod")
+def vod_catalog(page: int = Query(1, ge=1), page_size: int = Query(50, ge=1, le=200), q: str = Query(""), item_type: str = Query("movie")):
+    offset = (page - 1) * page_size
+    table = "vod_movies" if item_type == "movie" else "vod_series"
+    where = "WHERE published=1"
+    params: tuple = ()
+    if q:
+        where += " AND lower(title) LIKE ?"; params = (f"%{q.lower()}%",)
+    rows = db_execute(f"SELECT id,title,year,plot,poster,rights_status,stream_status,first_seen,last_seen FROM {table} {where} ORDER BY last_seen DESC LIMIT ? OFFSET ?", params + (page_size, offset), True)
+    keys = ["id","title","year","plot","poster","rights_status","stream_status","first_seen","last_seen"]
+    return {"page":page, "page_size":page_size, "items":[dict(zip(keys,r)) for r in rows]}
+
+
+def _vod_urls(vod_id: str):
+    return db_execute("SELECT id,url,headers_json FROM vod_streams WHERE item_id=? ORDER BY is_primary DESC,score DESC", (vod_id,), True)
+
+
+@app.api_route("/vod/stream/{vod_id}", methods=["GET", "HEAD"])
+def vod_stream(vod_id: str, request: Request):
+    candidates = _vod_urls(vod_id)
+    if not candidates: raise HTTPException(404, "VOD stream not found")
+    selected = None
+    for sid, url, headers_json in candidates:
+        if not safe_url(url): continue
+        try:
+            with httpx.Client(timeout=12, follow_redirects=True) as client:
+                probe = client.head(url, headers=json.loads(headers_json or "{}"))
+                if probe.status_code < 500:
+                    selected = (sid, url, json.loads(headers_json or "{}")); break
+        except httpx.HTTPError:
+            continue
+    if not selected: raise HTTPException(502, "No VOD upstream is currently reachable")
+    sid, url, upstream_headers = selected
+    request_headers = dict(upstream_headers)
+    if request.headers.get("range"): request_headers["Range"] = request.headers["range"]
+    if request.method == "HEAD":
+        with httpx.Client(timeout=12, follow_redirects=True) as client:
+            response = client.head(url, headers=request_headers)
+        return PlainTextResponse("", status_code=response.status_code, headers={k:v for k,v in response.headers.items() if k.lower() in {"content-length","content-type","accept-ranges","etag","last-modified","content-range"}})
+    def body():
+        with httpx.stream("GET", url, headers=request_headers, timeout=30, follow_redirects=True) as response:
+            response.raise_for_status()
+            for chunk in response.iter_bytes(1024 * 256): yield chunk
+    return StreamingResponse(body(), media_type="application/octet-stream", headers={"Accept-Ranges":"bytes"})
+
+
+@app.get("/api/v1/vod/stats")
+def vod_stats():
+    init_db()
+    result = {}
+    for key, sql in {"movies":"SELECT COUNT(*) FROM vod_movies", "series":"SELECT COUNT(*) FROM vod_series", "episodes":"SELECT COUNT(*) FROM vod_episodes", "published_movies":"SELECT COUNT(*) FROM vod_movies WHERE published=1", "rights_approved":"SELECT COUNT(*) FROM vod_rights WHERE rights_status='approved'", "rights_review":"SELECT COUNT(*) FROM vod_rights WHERE rights_status='review_required'"}.items():
+        result[key] = db_execute(sql, fetch=True)[0][0]
+    return result
+
+
+@app.api_route("/live/stream/{channel_id}", methods=["GET", "HEAD"])
+def live_stream(channel_id: str, request: Request):
+    candidates = db_execute("SELECT id,url,referrer,user_agent FROM streams WHERE channel_id=? AND status IN ('healthy','degraded') ORDER BY primary_stream DESC,score DESC", (channel_id,), True)
+    selected = None
+    for sid, url, referrer, user_agent in candidates:
+        if not safe_url(url): continue
+        headers = {"User-Agent": user_agent} if user_agent else {}
+        if referrer: headers["Referer"] = referrer
+        if request.headers.get("range"): headers["Range"] = request.headers["range"]
+        try:
+            if request.method == "HEAD":
+                with httpx.Client(timeout=8, follow_redirects=True) as client: probe = client.head(url, headers=headers)
+            else:
+                with httpx.Client(timeout=8, follow_redirects=True) as client: probe = client.head(url, headers=headers)
+            if probe.status_code < 500:
+                selected = (sid, url, headers); break
+        except httpx.HTTPError:
+            continue
+    if not selected: raise HTTPException(502, "No healthy live stream is available")
+    sid, url, headers = selected
+    if request.method == "HEAD":
+        with httpx.Client(timeout=8, follow_redirects=True) as client: response = client.head(url, headers=headers)
+        return PlainTextResponse("", status_code=response.status_code, headers={k:v for k,v in response.headers.items() if k.lower() in {"content-length","content-type","accept-ranges","etag","last-modified","content-range"}})
+    def body():
+        with httpx.stream("GET", url, headers=headers, timeout=30, follow_redirects=True) as response:
+            response.raise_for_status()
+            for chunk in response.iter_bytes(1024 * 256): yield chunk
+    return StreamingResponse(body(), media_type="application/vnd.apple.mpegurl", headers={"Accept-Ranges":"bytes"})
+
+
+@app.get("/admin/vod", response_class=FileResponse)
+def admin_vod():
+    return FileResponse(ROOT / "frontend" / "vod.html")
