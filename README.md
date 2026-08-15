@@ -19,7 +19,7 @@ flowchart LR
   H --> I[TVs, browsers, celulares e TOPTRO]
 ```
 
-A versão inicial fornece um backend executável com PostgreSQL, API FastAPI, sincronização IPTV-org, blocklist DMCA/NSFW, deduplicação por ID e nome normalizado, pontuação de qualidade, publicação por limiar, geração de M3U/XMLTV, relatórios e scripts PowerShell. A integração operacional com Dispatcharr é documentada porque a criação de contas e a configuração final dependem do ambiente do usuário.
+A v0.2 fornece um backend executável com PostgreSQL, migrações aditivas, API FastAPI paginada, sincronização IPTV-org e Free-TV, blocklist DMCA/NSFW, health check HLS controlado, publicação somente após health, primary/fallback via proxy estável, geração M3U/XMLTV com ElementTree, scheduler, autenticação administrativa, CI e relatórios. O catálogo VOD possui providers para Archive.org, Wikimedia Commons, NASA, M3U autorizado e Xtream legítimo, com direitos, deduplicação, STRM e proxy Range sem cache permanente de vídeo. A criação de objetos internos do Dispatcharr depende do Swagger da versão instalada; quando ele não está acessível, o backend informa a limitação em vez de enviar chamadas especulativas.
 
 ## Requisitos
 
@@ -33,7 +33,7 @@ cd IPTV
 .\scripts\install.ps1
 ```
 
-Depois, acesse `http://localhost:8080/docs` para a API e `http://localhost:9191` para o Dispatcharr. A primeira sincronização pode ser iniciada em `http://localhost:8080/api/sync`. As saídas compatíveis com Jellyfin ficam em `http://localhost:8080/family-tv.m3u` e `http://localhost:8080/family-tv.xml`.
+Depois, acesse `http://localhost:8080/docs` para a API e `http://localhost:9191` para o Dispatcharr. A primeira sincronização deve ser feita por `POST http://localhost:8080/api/sync` com autenticação administrativa. As saídas compatíveis com Jellyfin ficam em `http://localhost:8080/family-tv.m3u` e `http://localhost:8080/family-tv.xml`.
 
 ## Configuração do Jellyfin
 
@@ -48,7 +48,12 @@ Se preferir o Dispatcharr como camada de proxy e failover, abra a interface em `
 | `/health` | Verificação de disponibilidade |
 | `/api/stats` | Métricas de canais, streams e EPG |
 | `/api/channels` | Busca e filtros de canais |
-| `/api/sync` | Sincronização real da API IPTV-org |
+| `POST /api/sync` | Sincronização real de Live TV |
+| `GET /api/health-check?limit=20` | Health check controlado |
+| `POST /api/v1/vod/sync` | Sincronização VOD autorizada |
+| `GET /api/v1/vod` | Catálogo VOD paginado |
+| `GET /vod/stream/{id}` | Proxy VOD estável com Range |
+| `GET /api/v1/dispatcharr/status` | Descoberta do Swagger/estado do Dispatcharr |
 | `/api/report` | Geração de relatório JSON/Markdown |
 | `/family-tv.m3u` | Playlist publicada para Jellyfin/Dispatcharr |
 | `/family-tv.xml` | XMLTV básico compatível |
@@ -64,9 +69,9 @@ Se preferir o Dispatcharr como camada de proxy e failover, abra a interface em `
 
 Não coloque `.env`, API keys, senhas, cookies, sessões ou credenciais IPTV no Git. O arquivo `.env.example` contém somente nomes e valores de demonstração.
 
-## Limitações conhecidas da primeira versão
+## Validação e limitações conhecidas
 
-A importação estruturada principal está implementada para IPTV-org. O endpoint de sincronização já preserva URL, feed, título, referrer, user-agent, qualidade e label; a importação incremental do Free-TV, o health check HLS com ffprobe, a interface administrativa visual e a automação de configuração da API do Jellyfin são as próximas extensões. O XMLTV inicial publica o mapa de canais e será enriquecido quando forem incorporados feeds XMLTV autorizados.
+A suíte local possui 54 testes aprovados e a compilação Python foi validada. O smoke test real do Archive.org respondeu com metadata e URLs remotas. Wikimedia respondeu com rate limiting durante o teste de sessão e NASA não retornou itens de vídeo naquele momento; o código trata essas respostas como falha/ausência, sem declarar sucesso. Docker não está disponível no ambiente desta sessão, portanto o build e a execução dos containers estão cobertos pelo GitHub Actions, mas não foram runtime validated localmente. A configuração automática de objetos Dispatcharr continua condicionada ao Swagger da versão instalada, e a atualização automática da biblioteca Jellyfin depende de `JELLYFIN_URL` e `JELLYFIN_API_KEY`.
 
 ## Fontes e licenças
 

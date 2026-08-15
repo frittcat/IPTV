@@ -22,6 +22,7 @@ from fastapi import Depends, FastAPI, HTTPException, Query, Request
 from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from backend.security import require_admin
+from backend.dispatcharr import DispatcharrClient
 
 ROOT = Path(__file__).resolve().parents[1]
 DATA = ROOT / "data"
@@ -29,7 +30,7 @@ CONFIG = ROOT / "config" / "sources.yaml"
 DB_URL = os.getenv("DATABASE_URL", "sqlite:///./data/familystream.db")
 MIN_SCORE = int(os.getenv("PUBLISH_MIN_SCORE", "60"))
 
-app = FastAPI(title="FamilyStream Hub", version="0.1.0")
+app = FastAPI(title="FamilyStream Hub", version="0.2.0")
 app.mount("/admin", StaticFiles(directory=ROOT / "frontend", html=True), name="admin")
 
 @app.middleware("http")
@@ -104,8 +105,7 @@ def init_db():
             if not DB_URL.startswith("sqlite"):
                 stmt = stmt.replace("INTEGER PRIMARY KEY AUTOINCREMENT", "BIGSERIAL PRIMARY KEY")
             cur.execute(stmt)
-        migration = ROOT / "migrations" / "002_v0_2.sql"
-        if migration.exists():
+        for migration in sorted((ROOT / "migrations").glob("*.sql")):
             for stmt in migration.read_text(encoding="utf-8").split(";"):
                 stmt = stmt.strip()
                 if stmt:
@@ -339,12 +339,20 @@ def health_check(limit: int = Query(20, ge=1, le=100)):
     with httpx.Client(timeout=8, follow_redirects=True, headers={"User-Agent": "FamilyStream-Hub/0.1"}) as client:
         for sid, url in rows:
             status, ok = "offline", False
+            started = datetime.now().timestamp()
             try:
-                response = client.get(url, headers={"Range": "bytes=0-4095"})
-                ok = response.status_code < 400
+                stream_row = db_execute("SELECT referrer,user_agent FROM streams WHERE id=?", (sid,), True)[0]
+                headers = {}
+                if stream_row[0]: headers["Referer"] = stream_row[0]
+                if stream_row[1]: headers["User-Agent"] = stream_row[1]
+                response = client.get(url, headers={**headers, "Range": "bytes=0-8191"})
+                latency_ms = round((datetime.now().timestamp() - started) * 1000, 2)
+                text = response.text[:200000] if "text" in response.headers.get("content-type", "") or url.endswith(".m3u8") else ""
+                ok = response.status_code < 400 and ("#EXTM3U" in text or "mpegurl" in response.headers.get("content-type", "") or response.status_code in (200,206))
                 status = "healthy" if ok else "degraded"
-            except httpx.HTTPError:
-                pass
+                db_execute("INSERT INTO stream_health(stream_id,http_status,manifest_latency_ms,status,error,checked_at) VALUES(?,?,?,?,?,?)", (sid,response.status_code,latency_ms,status,None,now()))
+            except httpx.HTTPError as exc:
+                db_execute("INSERT INTO stream_health(stream_id,status,error,checked_at) VALUES(?,?,?,?)", (sid,status,str(exc)[:500],now()))
             db_execute("UPDATE streams SET status=?,last_checked=?,last_success=CASE WHEN ?=1 THEN ? ELSE last_success END,failure_count=CASE WHEN ?=1 THEN 0 ELSE failure_count+1 END WHERE id=?", (status, now(), int(ok), now(), int(ok), sid))
             results.append({"id": sid, "status": status})
     db_execute("UPDATE channels SET published=CASE WHEN id IN (SELECT channel_id FROM streams WHERE status IN ('healthy','degraded') AND score>=? GROUP BY channel_id) THEN 1 ELSE 0 END", (MIN_SCORE,))
@@ -488,3 +496,14 @@ def live_stream(channel_id: str, request: Request):
 @app.get("/admin/vod", response_class=FileResponse)
 def admin_vod():
     return FileResponse(ROOT / "frontend" / "vod.html")
+
+
+@app.get("/api/v1/dispatcharr/status")
+def dispatcharr_status():
+    client = DispatcharrClient()
+    return client.status()
+
+
+@app.get("/api/v1/dispatcharr/integration-plan")
+def dispatcharr_integration_plan():
+    return DispatcharrClient().integration_plan()

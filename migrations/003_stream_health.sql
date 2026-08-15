@@ -1,0 +1,2 @@
+CREATE TABLE IF NOT EXISTS stream_health (id INTEGER PRIMARY KEY AUTOINCREMENT, stream_id TEXT NOT NULL, http_status INTEGER, manifest_latency_ms REAL, first_segment_latency_ms REAL, resolution TEXT, codec TEXT, audio_codec TEXT, bitrate INTEGER, status TEXT NOT NULL, error TEXT, checked_at TEXT NOT NULL);
+CREATE INDEX IF NOT EXISTS idx_stream_health_stream_time ON stream_health(stream_id, checked_at);
