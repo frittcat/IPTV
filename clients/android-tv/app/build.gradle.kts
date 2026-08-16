@@ -21,8 +21,8 @@ android {
         applicationId = "tv.familystream.client"
         minSdk = 23
         targetSdk = 36
-        versionCode = 30007
-        versionName = "0.3.0-dev.3"
+        versionCode = 30008
+        versionName = "0.3.0-dev.4"
         buildConfigField("String", "DEFAULT_SERVER_URL", "\"http://10.0.2.2:8080\"")
         buildConfigField(
             "String",
