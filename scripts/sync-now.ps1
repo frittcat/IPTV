@@ -30,6 +30,10 @@ Write-Host '1/5 Sincronizando catalogo Live BR/PT/FR publico/autorizado (modo ra
 Invoke-GaloDoidoPython -Stage 'Etapa 1/5: catalogo Live' -Code "from backend.live_sync import fast_sync; print(fast_sync())"
 
 Write-Host ''
+Write-Host '1b/5 Verificando fonte Live autorizada configurada localmente...'
+Invoke-GaloDoidoPython -Stage 'Etapa 1b/5: fonte Live autorizada' -Code "from providers.xtream_live import sync_xtream_live; from backend.app import db_execute, now; print(sync_xtream_live(db_execute, now))"
+
+Write-Host ''
 Write-Host "2/5 Importando ate $VodLimit filmes publicos/licenciados do Archive.org..."
 try {
   Invoke-GaloDoidoPython -Stage 'Etapa 2/5: VOD' -Code "from backend.app import vod_sync; print(vod_sync('archive_org', $VodLimit))"
@@ -53,4 +57,5 @@ Invoke-GaloDoidoPython -Stage 'Etapa 5/5: cobertura BR' -Code "import json; from
 Write-Host ''
 Write-Host 'Sincronizacao concluida.'
 Write-Host 'A Grade Master Brasil permanece como alvo mesmo para canais ainda sem fonte saudavel.'
+Write-Host 'Credenciais de fontes autorizadas ficam somente no .env local e nunca devem ser enviadas ao GitHub.'
 Write-Host 'Na TV, feche e abra novamente o GaloDoidoTV para recarregar o catalogo.'
