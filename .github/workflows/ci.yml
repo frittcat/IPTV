@@ -4,6 +4,15 @@ on:
     branches: [main, v0.3-platform]
   pull_request:
     branches: [main]
+
+# Rapid development commits used to leave several Android jobs publishing the
+# same release tag at once. GitHub's --clobber implementation deletes/recreates
+# assets, so concurrent publishers could race and one upload would receive 404.
+# Keep only the newest run for a branch/ref.
+concurrency:
+  group: galodoidotv-ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   test:
     runs-on: ubuntu-latest
