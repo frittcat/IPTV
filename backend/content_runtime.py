@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from fastapi import APIRouter, HTTPException, Query
 
+from backend.live_master_catalog import coverage_report, decorate_channel
+
 router = APIRouter()
 
 
@@ -15,7 +17,7 @@ def _channel_dict(row):
     keys = ["id", "name", "country", "categories", "logo", "has_epg"]
     item = dict(zip(keys, row))
     item["has_epg"] = bool(item["has_epg"])
-    return item
+    return decorate_channel(item)
 
 
 def _vod_dict(row, item_type: str):
@@ -103,15 +105,35 @@ def live_channels(
     q: str = Query(""),
     country: str = Query(""),
     category: str = Query(""),
+    section: str = Query(""),
     limit: int = Query(100, ge=1, le=500),
     offset: int = Query(0, ge=0),
 ):
-    rows = _live_rows(limit, offset, q=q, country=country, category=category)
+    # section is the stable GaloDoidoTV navigation category from the BR master
+    # catalog. We fetch the playable country set first and filter after decoration,
+    # keeping provider-specific source categories independent from the UI taxonomy.
+    raw_limit = 500 if section and country.upper() == "BR" else limit
+    raw_offset = 0 if section and country.upper() == "BR" else offset
+    rows = _live_rows(raw_limit, raw_offset, q=q, country=country, category=category)
+    items = [_channel_dict(row) for row in rows]
+    if section and country.upper() == "BR":
+        wanted = section.strip().casefold()
+        items = [item for item in items if str(item.get("section") or "").casefold() == wanted]
+        items = items[offset:offset + limit]
     return {
         "offset": offset,
         "limit": limit,
-        "items": [_channel_dict(row) for row in rows],
+        "country": country.upper() or None,
+        "section": section or None,
+        "items": items,
     }
+
+
+@router.get("/api/v1/live/coverage")
+def live_coverage(country: str = Query("BR")):
+    if country.upper() != "BR":
+        raise HTTPException(400, "Master coverage is currently available for BR")
+    return coverage_report(_db_execute)
 
 
 @router.get("/api/v1/catalog/{item_type}")
