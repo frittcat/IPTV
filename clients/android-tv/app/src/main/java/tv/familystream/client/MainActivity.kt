@@ -38,11 +38,16 @@ class MainActivity : AppCompatActivity() {
     private lateinit var contentHost: LinearLayout
     private lateinit var sectionTitle: TextView
     private lateinit var statusText: TextView
+    private lateinit var fullscreenHost: FrameLayout
 
     private var backAction: (() -> Unit)? = null
     private var liveChannels: List<Channel> = emptyList()
     private var currentLiveIndex = -1
     private var currentSection = "Destaques"
+    private var playerFullscreen = false
+    private var playerOriginalParent: ViewGroup? = null
+    private var playerOriginalIndex = -1
+    private var playerOriginalLayoutParams: ViewGroup.LayoutParams? = null
 
     private val expandedSidebarWidth by lazy { dp(286) }
     private val collapsedSidebarWidth by lazy { dp(104) }
@@ -72,10 +77,13 @@ class MainActivity : AppCompatActivity() {
                 exo.setHandleAudioBecomingNoisy(true)
                 exo.addListener(object : Player.Listener {
                     override fun onPlayerError(error: PlaybackException) {
-                        statusText.text = "Falha de reprodução · ${error.errorCodeName}"
+                        if (::statusText.isInitialized) {
+                            statusText.text = "Falha de reprodução · ${error.errorCodeName}"
+                        }
                     }
 
                     override fun onPlaybackStateChanged(playbackState: Int) {
+                        if (!::statusText.isInitialized) return
                         when (playbackState) {
                             Player.STATE_BUFFERING -> statusText.text = "Carregando stream…"
                             Player.STATE_READY -> if (player.playWhenReady) statusText.text = "Reproduzindo"
@@ -88,6 +96,10 @@ class MainActivity : AppCompatActivity() {
         setContentView(buildTvShell())
         onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
             override fun handleOnBackPressed() {
+                if (playerFullscreen) {
+                    exitPlayerFullscreen()
+                    return
+                }
                 val action = backAction
                 if (action != null) {
                     backAction = null
@@ -104,13 +116,17 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun buildTvShell(): View {
-        val root = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
+        val root = FrameLayout(this).apply {
             setBackgroundColor(Color.rgb(8, 10, 15))
             layoutParams = ViewGroup.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.MATCH_PARENT,
             )
+        }
+
+        val shell = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            setBackgroundColor(Color.rgb(8, 10, 15))
         }
 
         sideBar = LinearLayout(this).apply {
@@ -122,7 +138,7 @@ class MainActivity : AppCompatActivity() {
         }
 
         val brand = TextView(this).apply {
-            text = "FamilyStream"
+            text = "GaloDoidoTV"
             textSize = 23f
             setTextColor(Color.WHITE)
             setPadding(dp(14), 0, 0, dp(24))
@@ -139,8 +155,23 @@ class MainActivity : AppCompatActivity() {
             layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1f)
         }
 
-        root.addView(sideBar)
-        root.addView(contentHost)
+        shell.addView(sideBar)
+        shell.addView(contentHost)
+        root.addView(
+            shell,
+            FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT),
+        )
+
+        fullscreenHost = FrameLayout(this).apply {
+            visibility = View.GONE
+            setBackgroundColor(Color.BLACK)
+            isFocusable = true
+            isFocusableInTouchMode = false
+        }
+        root.addView(
+            fullscreenHost,
+            FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT),
+        )
         return root
     }
 
@@ -177,7 +208,7 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    private fun prepareScreen(title: String, status: String = "Conectando ao FamilyStream…") {
+    private fun prepareScreen(title: String, status: String = "Conectando ao GaloDoidoTV…") {
         contentHost.removeAllViews()
         sectionTitle = TextView(this).apply {
             text = title
@@ -223,34 +254,18 @@ class MainActivity : AppCompatActivity() {
             setPadding(0, 0, 0, dp(20))
         }
 
-        val hero = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(330)).apply {
+        val hero = FrameLayout(this).apply {
+            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(400)).apply {
                 bottomMargin = dp(20)
             }
         }
         playerView = buildPlayerView().apply {
-            layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1.7f).apply {
-                marginEnd = dp(18)
-            }
-        }
-        val liveQuick = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            gravity = Gravity.CENTER_VERTICAL
-            layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1f)
-            background = rounded(Color.rgb(16, 20, 29), dp(16).toFloat())
-            setPadding(dp(18), dp(16), dp(18), dp(16))
-        }
-        liveQuick.addView(sectionLabel("AO VIVO AGORA"))
-        feed.live.take(4).forEachIndexed { index, channel ->
-            liveQuick.addView(textAction(channel.name) {
-                liveChannels = feed.live
-                currentLiveIndex = index
-                play("live", channel.id, channel.name)
-            })
+            layoutParams = FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.MATCH_PARENT,
+            )
         }
         hero.addView(playerView)
-        hero.addView(liveQuick)
         column.addView(hero)
 
         if (feed.movies.isNotEmpty()) column.addView(buildCatalogRail("Filmes", feed.movies) { showMovieDetail(it) })
@@ -284,7 +299,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun renderLive(channels: List<Channel>) {
-        prepareScreen("Ao Vivo", "${channels.size} canais disponíveis · CH+/CH− troca rapidamente")
+        prepareScreen("Ao Vivo", "${channels.size} canais disponíveis · OK no player = tela cheia · CH+/CH− troca rapidamente")
         if (channels.isEmpty()) {
             finishScreen(centeredMessage("Nenhum canal saudável publicado."))
             return
@@ -467,7 +482,7 @@ class MainActivity : AppCompatActivity() {
             gravity = Gravity.CENTER
         }
         column.addView(bigTitle("Espaço Infantil"))
-        column.addView(bodyText("A navegação infantil e o controle parental usarão o mesmo catálogo canônico do FamilyStream, com filtros por perfil."))
+        column.addView(bodyText("A navegação infantil e o controle parental usarão o mesmo catálogo do GaloDoidoTV, com filtros por perfil."))
         column.addView(textAction("Ver filmes disponíveis") { showCatalog("movie") })
         column.addView(textAction("Ver séries disponíveis") { showCatalog("series") })
         finishScreen(column)
@@ -522,6 +537,57 @@ class MainActivity : AppCompatActivity() {
         background = rounded(Color.BLACK, dp(14).toFloat())
         isFocusable = true
         isFocusableInTouchMode = false
+        setOnClickListener {
+            if (!playerFullscreen) enterPlayerFullscreen(this)
+        }
+        setOnKeyListener { _, keyCode, event ->
+            if (!playerFullscreen && event.action == KeyEvent.ACTION_DOWN &&
+                keyCode in setOf(KeyEvent.KEYCODE_DPAD_CENTER, KeyEvent.KEYCODE_ENTER, KeyEvent.KEYCODE_NUMPAD_ENTER)
+            ) {
+                enterPlayerFullscreen(this)
+                true
+            } else {
+                false
+            }
+        }
+    }
+
+    private fun enterPlayerFullscreen(view: PlayerView) {
+        if (playerFullscreen) return
+        val parent = view.parent as? ViewGroup ?: return
+        playerOriginalParent = parent
+        playerOriginalIndex = parent.indexOfChild(view)
+        playerOriginalLayoutParams = view.layoutParams
+        parent.removeView(view)
+
+        fullscreenHost.removeAllViews()
+        fullscreenHost.visibility = View.VISIBLE
+        fullscreenHost.addView(
+            view,
+            FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT),
+        )
+        playerFullscreen = true
+        view.requestFocus()
+        view.showController()
+    }
+
+    private fun exitPlayerFullscreen() {
+        if (!playerFullscreen) return
+        val view = fullscreenHost.getChildAt(0) as? PlayerView
+        fullscreenHost.removeAllViews()
+        fullscreenHost.visibility = View.GONE
+        playerFullscreen = false
+
+        val parent = playerOriginalParent
+        val params = playerOriginalLayoutParams
+        if (view != null && parent != null && params != null) {
+            val index = playerOriginalIndex.coerceIn(0, parent.childCount)
+            parent.addView(view, index, params)
+            view.requestFocus()
+        }
+        playerOriginalParent = null
+        playerOriginalLayoutParams = null
+        playerOriginalIndex = -1
     }
 
     private fun buildCatalogRail(title: String, items: List<CatalogItem>, click: (CatalogItem) -> Unit): View {
