@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import time
 from dataclasses import dataclass
-from typing import Any, Callable
+from typing import Any
 
 import httpx
 
@@ -80,7 +80,6 @@ def check_candidate(candidate: UpstreamCandidate, item_kind: str, timeout_second
                 with client.stream("GET", candidate.url, headers=headers) as fallback:
                     status = fallback.status_code
                     if upstream_status_usable(status):
-                        # Force at least one media chunk/manifest bytes to arrive.
                         next(fallback.iter_bytes(8192), b"")
             latency = round((time.monotonic() - started) * 1000.0, 2)
             success = upstream_status_usable(status)
@@ -104,7 +103,7 @@ def _persist(result: HealthCheckResult) -> None:
         latency_ms=result.latency_ms,
         error_code=result.error_code,
     )
-    status = "healthy" if result.success else "degraded"
+    status = "healthy" if result.success else "offline"
     if result.item_kind == "live":
         _db_execute(
             "UPDATE streams SET status=?,last_checked=CURRENT_TIMESTAMP,last_success=CASE WHEN ?=1 THEN CURRENT_TIMESTAMP ELSE last_success END,"
@@ -119,6 +118,18 @@ def _persist(result: HealthCheckResult) -> None:
         )
 
 
+def _refresh_publication() -> None:
+    from backend.app import MIN_SCORE, export_files
+
+    _db_execute(
+        "UPDATE channels SET published=CASE WHEN id IN ("
+        "SELECT channel_id FROM streams WHERE status IN ('healthy','degraded') AND score>=? GROUP BY channel_id"
+        ") THEN 1 ELSE 0 END",
+        (MIN_SCORE,),
+    )
+    export_files()
+
+
 def run_health_batch(live_limit: int = 20, vod_limit: int = 10) -> dict[str, Any]:
     results: list[HealthCheckResult] = []
     for kind, candidates in (("live", _live_due(live_limit)), ("vod", _vod_due(vod_limit))):
@@ -126,6 +137,7 @@ def run_health_batch(live_limit: int = 20, vod_limit: int = 10) -> dict[str, Any
             result = check_candidate(candidate, kind)
             _persist(result)
             results.append(result)
+    _refresh_publication()
     successes = sum(1 for item in results if item.success)
     return {
         "checked": len(results),
