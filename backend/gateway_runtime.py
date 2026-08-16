@@ -5,12 +5,17 @@ import secrets
 import threading
 import time
 from dataclasses import dataclass, field
-from typing import Iterable
 
 import httpx
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import PlainTextResponse, Response, StreamingResponse
 
+from backend.playback_resolver import (
+    PROFILES,
+    candidate_diagnostic,
+    profile_from_headers,
+    rank_candidates,
+)
 from backend.streaming_gateway import (
     UpstreamCandidate,
     is_hls,
@@ -28,6 +33,7 @@ class GatewaySession:
     id: str
     headers: dict[str, str]
     expires_at: float
+    profile_id: str = "generic"
     resources: dict[str, str] = field(default_factory=dict)
 
 
@@ -49,7 +55,7 @@ class GatewaySessionStore:
         for sid in expired:
             self._sessions.pop(sid, None)
 
-    def create(self, headers: dict[str, str] | None = None) -> GatewaySession:
+    def create(self, headers: dict[str, str] | None = None, profile_id: str = "generic") -> GatewaySession:
         with self._lock:
             self._prune()
             sid = secrets.token_urlsafe(24)
@@ -57,6 +63,7 @@ class GatewaySessionStore:
                 id=sid,
                 headers=dict(headers or {}),
                 expires_at=time.monotonic() + self.ttl_seconds,
+                profile_id=profile_id,
             )
             self._sessions[sid] = session
             return session
@@ -165,17 +172,9 @@ def _probe(candidate: UpstreamCandidate) -> int | None:
         return None
 
 
-def _select(candidates: Iterable[UpstreamCandidate]) -> UpstreamCandidate | None:
-    for candidate in candidates:
-        status = _probe(candidate)
-        if status is not None and upstream_status_usable(status):
-            return candidate
-    return None
-
-
 def _client_base(request: Request) -> str:
     configured = request.app.state.gateway_public_base if hasattr(request.app.state, "gateway_public_base") else None
-    return (configured or str(request.base_url).rstrip("/"))
+    return configured or str(request.base_url).rstrip("/")
 
 
 def _proxy_resource_url(request: Request, session_id: str, absolute_url: str) -> str:
@@ -185,7 +184,7 @@ def _proxy_resource_url(request: Request, session_id: str, absolute_url: str) ->
     return f"{_client_base(request)}/api/v1/gateway/hls/{session_id}/{rid}"
 
 
-def _stream_response(candidate: UpstreamCandidate, request: Request):
+def _stream_response(candidate: UpstreamCandidate, request: Request, profile_id: str = "generic"):
     upstream_headers = request_headers_for_upstream(candidate.headers, request.headers)
     client = httpx.Client(timeout=STREAM_TIMEOUT, follow_redirects=True)
     try:
@@ -202,6 +201,7 @@ def _stream_response(candidate: UpstreamCandidate, request: Request):
         raise HTTPException(502, f"Upstream media rejected request ({status})")
 
     outgoing_headers = response_headers_for_client(response.headers)
+    outgoing_headers["X-FamilyStream-Device-Profile"] = profile_id
 
     if request.method == "HEAD":
         response.close()
@@ -218,7 +218,7 @@ def _stream_response(candidate: UpstreamCandidate, request: Request):
         if len(payload) > MAX_MANIFEST_BYTES:
             raise HTTPException(502, "HLS manifest exceeds gateway limit")
         manifest = payload.decode("utf-8", errors="replace")
-        session = SESSIONS.create(candidate.headers)
+        session = SESSIONS.create(candidate.headers, profile_id=profile_id)
         rewritten = rewrite_hls_manifest(
             manifest,
             candidate.url,
@@ -250,23 +250,73 @@ def _stream_response(candidate: UpstreamCandidate, request: Request):
     )
 
 
-def _play(candidates: list[UpstreamCandidate], request: Request, not_found: str):
+def _play(candidates: list[UpstreamCandidate], request: Request, not_found: str, kind: str):
     if not candidates:
         raise HTTPException(404, not_found)
-    selected = _select(candidates)
-    if selected is None:
-        raise HTTPException(502, "No usable upstream media source")
-    return _stream_response(selected, request)
+
+    profile = profile_from_headers(request.headers)
+    ranked = rank_candidates(candidates, profile, kind)
+    attempted = 0
+
+    # Do not trust a successful probe alone. We attempt the real upstream request
+    # and fall through to the next ranked source when opening it fails before the
+    # response is handed to the client.
+    for candidate in ranked:
+        status = _probe(candidate)
+        if status is None or not upstream_status_usable(status):
+            continue
+        attempted += 1
+        try:
+            return _stream_response(candidate, request, profile.id)
+        except HTTPException as exc:
+            if exc.status_code != 502:
+                raise
+            continue
+
+    raise HTTPException(502, f"No usable upstream media source after {attempted} playback attempts")
+
+
+@router.get("/api/v1/playback/profiles")
+def playback_profiles():
+    return {
+        "profiles": [
+            {
+                "id": profile.id,
+                "video_codecs": list(profile.video_codecs),
+                "audio_codecs": list(profile.audio_codecs),
+                "max_height": profile.max_height,
+                "preferred_protocols": list(profile.preferred_protocols),
+                "prefer_hevc": profile.prefer_hevc,
+            }
+            for profile in PROFILES.values()
+        ]
+    }
+
+
+@router.get("/api/v1/playback/diagnostics/{kind}/{item_id}")
+def playback_diagnostics(kind: str, item_id: str, request: Request):
+    if kind not in {"live", "vod"}:
+        raise HTTPException(400, "kind must be live or vod")
+    candidates = _live_candidates(item_id) if kind == "live" else _vod_candidates(item_id)
+    profile = profile_from_headers(request.headers)
+    ranked = rank_candidates(candidates, profile, kind)
+    return {
+        "kind": kind,
+        "item_id": item_id,
+        "profile": profile.id,
+        "candidate_count": len(ranked),
+        "candidates": [candidate_diagnostic(candidate, profile, kind) for candidate in ranked],
+    }
 
 
 @router.api_route("/api/v1/play/live/{channel_id}", methods=["GET", "HEAD"])
 def play_live(channel_id: str, request: Request):
-    return _play(_live_candidates(channel_id), request, "Live channel not found")
+    return _play(_live_candidates(channel_id), request, "Live channel not found", "live")
 
 
 @router.api_route("/api/v1/play/vod/{vod_id}", methods=["GET", "HEAD"])
 def play_vod(vod_id: str, request: Request):
-    return _play(_vod_candidates(vod_id), request, "VOD item not found")
+    return _play(_vod_candidates(vod_id), request, "VOD item not found", "vod")
 
 
 # Compatibility routes: app_v03 removes the legacy v0.2 handlers before this
@@ -290,7 +340,6 @@ def hls_resource(session_id: str, resource_id: str, request: Request):
     if not _safe_url(url):
         raise HTTPException(502, "Unsafe HLS resource URL")
 
-    candidate = UpstreamCandidate(resource_id, url, session.headers)
     upstream_headers = request_headers_for_upstream(session.headers, request.headers)
     client = httpx.Client(timeout=STREAM_TIMEOUT, follow_redirects=True)
     try:
@@ -307,6 +356,7 @@ def hls_resource(session_id: str, resource_id: str, request: Request):
         raise HTTPException(502, f"HLS resource rejected request ({status})")
 
     outgoing_headers = response_headers_for_client(response.headers)
+    outgoing_headers["X-FamilyStream-Device-Profile"] = session.profile_id
     if request.method == "HEAD":
         response.close()
         client.close()
