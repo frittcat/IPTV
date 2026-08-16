@@ -3,6 +3,7 @@ package tv.familystream.client
 import android.app.Activity
 import android.app.Application
 import android.os.Bundle
+import android.text.TextUtils
 import android.view.View
 import android.view.ViewGroup
 import android.view.ViewTreeObserver
@@ -12,6 +13,8 @@ import androidx.media3.ui.PlayerView
 
 @UnstableApi
 class GaloDoidoApplication : Application(), Application.ActivityLifecycleCallbacks {
+    private val menuLabels = setOf("Ao Vivo", "Destaques", "Filmes", "Séries", "Infantil", "Explorar")
+
     override fun onCreate() {
         super.onCreate()
         registerActivityLifecycleCallbacks(this)
@@ -29,12 +32,13 @@ class GaloDoidoApplication : Application(), Application.ActivityLifecycleCallbac
 
     private fun polishUi(view: View) {
         if (view is PlayerView) {
-            // Keep buffering internal, like the reference Android TV player:
-            // no visible loading spinner and no controller popping up just
-            // because the stream briefly re-buffers.
+            // Dedicated-TV behavior: buffering remains internal and the stock
+            // ExoPlayer timeline/controller does not pop up during normal Live TV.
+            // The remote can still summon controls explicitly when needed.
             view.setShowBuffering(PlayerView.SHOW_BUFFERING_NEVER)
             view.controllerAutoShow = false
             view.controllerShowTimeoutMs = 2500
+            if (view.player?.isPlaying == true) view.hideController()
         }
 
         if (view is TextView) {
@@ -45,7 +49,20 @@ class GaloDoidoApplication : Application(), Application.ActivityLifecycleCallbac
             if (view.contentDescription?.toString()?.contains("FamilyStream") == true) {
                 view.contentDescription = view.contentDescription.toString().replace("FamilyStream", "GaloDoidoTV")
             }
+
+            val polished = view.text?.toString().orEmpty()
+            if (polished == "GaloDoidoTV") {
+                view.isSingleLine = true
+                view.maxLines = 1
+                view.ellipsize = TextUtils.TruncateAt.END
+                view.textSize = 18f
+            } else if (polished in menuLabels) {
+                view.isSingleLine = true
+                view.maxLines = 1
+                view.ellipsize = TextUtils.TruncateAt.END
+            }
         }
+
         if (view is ViewGroup) {
             for (index in 0 until view.childCount) polishUi(view.getChildAt(index))
         }
