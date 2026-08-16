@@ -19,8 +19,29 @@ class SplashActivity : AppCompatActivity() {
     private var downloadStarted = false
     private var updateDialogVisible = false
 
+    private val preferences by lazy { getSharedPreferences("galodoidotv", MODE_PRIVATE) }
+    private val effectiveServerUrl: String by lazy {
+        val incoming = intent.getStringExtra("server_url")
+            ?.trimEnd('/')
+            ?.takeIf { it.startsWith("http://") || it.startsWith("https://") }
+        if (incoming != null) {
+            preferences.edit().putString("server_url", incoming).apply()
+            incoming
+        } else {
+            preferences.getString("server_url", null)
+                ?.trimEnd('/')
+                ?.takeIf { it.startsWith("http://") || it.startsWith("https://") }
+                ?: BuildConfig.DEFAULT_SERVER_URL
+        }
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        // Resolve and persist the server before checking for updates. This makes
+        // the first ADB-provided LAN address survive normal launcher starts and
+        // future in-place APK updates.
+        effectiveServerUrl
+
         window.decorView.systemUiVisibility = (
             View.SYSTEM_UI_FLAG_FULLSCREEN or
                 View.SYSTEM_UI_FLAG_HIDE_NAVIGATION or
@@ -83,8 +104,9 @@ class SplashActivity : AppCompatActivity() {
 
     private fun continueIfReady() {
         if (!minimumSplashElapsed || !updateCheckFinished || pendingUpdate != null || isFinishing) return
-        val next = Intent(this, MainActivity::class.java)
-        intent.getStringExtra("server_url")?.let { next.putExtra("server_url", it) }
+        val next = Intent(this, MainActivity::class.java).apply {
+            putExtra("server_url", effectiveServerUrl)
+        }
         startActivity(next)
         finish()
         overridePendingTransition(android.R.anim.fade_in, android.R.anim.fade_out)
