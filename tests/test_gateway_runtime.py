@@ -9,6 +9,8 @@ def test_v03_replaces_legacy_media_routes_once():
     assert paths.count("/api/v1/play/live/{channel_id}") == 1
     assert paths.count("/api/v1/play/vod/{vod_id}") == 1
     assert paths.count("/api/v1/gateway/hls/{session_id}/{resource_id}") == 1
+    assert paths.count("/api/v1/playback/profiles") == 1
+    assert paths.count("/api/v1/playback/diagnostics/{kind}/{item_id}") == 1
 
 
 def test_hls_registry_keeps_provider_url_and_headers_server_side():
@@ -16,7 +18,7 @@ def test_hls_registry_keeps_provider_url_and_headers_server_side():
     session = store.create({
         "Authorization": "Bearer provider-secret",
         "Cookie": "provider=session-secret",
-    })
+    }, profile_id="android-tv-modern")
     upstream = "https://media.example/live/master.m3u8?token=private-token"
     resource_id = store.register(session.id, upstream)
 
@@ -33,6 +35,7 @@ def test_hls_registry_keeps_provider_url_and_headers_server_side():
     assert resolved_url == upstream
     assert resolved_session.headers["Authorization"] == "Bearer provider-secret"
     assert resolved_session.headers["Cookie"] == "provider=session-secret"
+    assert resolved_session.profile_id == "android-tv-modern"
 
 
 def test_unknown_hls_resource_is_not_resolved():
