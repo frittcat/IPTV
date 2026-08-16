@@ -1,8 +1,16 @@
-<vector xmlns:android="http://schemas.android.com/apk/res/android"
-    android:width="320dp"
-    android:height="180dp"
-    android:viewportWidth="320"
-    android:viewportHeight="180">
-    <path android:fillColor="#11151D" android:pathData="M0,0h320v180h-320z" />
-    <path android:fillColor="#FFFFFF" android:pathData="M125,55L125,125L195,90z" />
-</vector>
+<layer-list xmlns:android="http://schemas.android.com/apk/res/android">
+    <item>
+        <shape android:shape="rectangle">
+            <solid android:color="#080A0F" />
+        </shape>
+    </item>
+    <item
+        android:width="220dp"
+        android:height="120dp"
+        android:gravity="center">
+        <bitmap
+            android:src="@drawable/galodoidotv_logo"
+            android:gravity="center"
+            android:filter="true" />
+    </item>
+</layer-list>
