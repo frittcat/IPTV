@@ -22,19 +22,24 @@ if ([string]::IsNullOrWhiteSpace($ServerIp)) {
 
 $publicUrl = "http://${ServerIp}:8080"
 $lines = Get-Content '.env'
-$found = $false
+$foundNew = $false
+$foundLegacy = $false
 $updated = foreach ($line in $lines) {
-  if ($line -match '^FAMILYSTREAM_PUBLIC_URL=') {
-    $found = $true
+  if ($line -match '^GALODOIDOTV_PUBLIC_URL=') {
+    $foundNew = $true
+    "GALODOIDOTV_PUBLIC_URL=$publicUrl"
+  } elseif ($line -match '^FAMILYSTREAM_PUBLIC_URL=') {
+    $foundLegacy = $true
     "FAMILYSTREAM_PUBLIC_URL=$publicUrl"
   } else {
     $line
   }
 }
-if (-not $found) { $updated += "FAMILYSTREAM_PUBLIC_URL=$publicUrl" }
+if (-not $foundNew) { $updated += "GALODOIDOTV_PUBLIC_URL=$publicUrl" }
+if (-not $foundLegacy) { $updated += "FAMILYSTREAM_PUBLIC_URL=$publicUrl" }
 $updated | Set-Content -Encoding utf8 '.env'
 
 docker compose up -d --force-recreate backend scheduler | Out-Host
 Write-Host ''
-Write-Host "FamilyStream LAN configurado em: $publicUrl"
+Write-Host "GaloDoidoTV LAN configurado em: $publicUrl"
 Write-Host "Teste em outro dispositivo: $publicUrl/health"
