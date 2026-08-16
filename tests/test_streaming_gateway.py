@@ -47,14 +47,14 @@ segment001.ts
     rewritten = rewrite_hls_manifest(
         manifest,
         "https://media.example/path/master.m3u8",
-        lambda url: "https://family/gateway?u=" + url,
+        lambda url: "https://galo/gateway?u=" + url,
     )
-    assert "https://family/gateway?u=https://media.example/path/audio/pt.m3u8" in rewritten
-    assert "https://family/gateway?u=https://media.example/path/subs/pt.m3u8" in rewritten
-    assert "https://family/gateway?u=https://media.example/path/keys/key.bin" in rewritten
-    assert "https://family/gateway?u=https://media.example/path/init.mp4" in rewritten
-    assert "https://family/gateway?u=https://media.example/path/variant/720.m3u8" in rewritten
-    assert "https://family/gateway?u=https://media.example/path/segment001.ts" in rewritten
+    assert "https://galo/gateway?u=https://media.example/path/audio/pt.m3u8" in rewritten
+    assert "https://galo/gateway?u=https://media.example/path/subs/pt.m3u8" in rewritten
+    assert "https://galo/gateway?u=https://media.example/path/keys/key.bin" in rewritten
+    assert "https://galo/gateway?u=https://media.example/path/init.mp4" in rewritten
+    assert "https://galo/gateway?u=https://media.example/path/variant/720.m3u8" in rewritten
+    assert "https://galo/gateway?u=https://media.example/path/segment001.ts" in rewritten
 
 
 def test_client_secrets_are_not_forwarded_but_range_is():
@@ -65,6 +65,16 @@ def test_client_secrets_are_not_forwarded_but_range_is():
     assert headers["Authorization"] == "Bearer provider-secret"
     assert headers["Cookie"] == "provider=session"
     assert headers["Range"] == "bytes=100-200"
+
+
+def test_provider_user_agent_and_referer_win_over_player_headers():
+    headers = request_headers_for_upstream(
+        {"User-Agent": "ProviderUA", "Referer": "https://provider.example/"},
+        {"User-Agent": "ExoPlayer", "Referer": "http://192.168.1.21/", "Range": "bytes=0-"},
+    )
+    assert headers["User-Agent"] == "ProviderUA"
+    assert headers["Referer"] == "https://provider.example/"
+    assert headers["Range"] == "bytes=0-"
 
 
 def test_response_header_filter_keeps_range_metadata():
