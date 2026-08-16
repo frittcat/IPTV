@@ -72,23 +72,22 @@ def check_candidate(candidate: UpstreamCandidate, item_kind: str, timeout_second
         return HealthCheckResult(candidate.id, item_kind, False, None, None, "unsafe_url")
     started = time.monotonic()
     try:
-        timeout = httpx.Timeout(timeout_seconds)
-        with httpx.Client(timeout=timeout, follow_redirects=True) as client:
-            response = client.head(candidate.url, headers=candidate.headers)
-            status = response.status_code
-            if not upstream_status_usable(status) and status in {400, 403, 405, 501}:
-                headers = dict(candidate.headers)
-                headers["Range"] = "bytes=0-8191"
-                with client.stream("GET", candidate.url, headers=headers) as fallback:
-                    status = fallback.status_code
-                    if upstream_status_usable(status):
-                        next(fallback.iter_bytes(8192), b"")
-            latency = round((time.monotonic() - started) * 1000.0, 2)
-            success = upstream_status_usable(status)
-            return HealthCheckResult(
-                candidate.id, item_kind, success, status, latency,
-                None if success else f"http_{status}",
-            )
+        # Use the same bounded media-aware probe as the playback resolver.
+        # This avoids publishing endpoints that merely return HTTP 200 with HTML,
+        # geo-block pages or extensionless manifests the player cannot classify.
+        from backend.gateway_runtime import _probe_media
+
+        probe = _probe_media(candidate)
+        latency = round((time.monotonic() - started) * 1000.0, 2)
+        success = (
+            probe.status_code is not None
+            and upstream_status_usable(probe.status_code)
+            and probe.mime_type is not None
+        )
+        error = None if success else (
+            f"http_{probe.status_code}" if probe.status_code is not None else "not_media"
+        )
+        return HealthCheckResult(candidate.id, item_kind, success, probe.status_code, latency, error)
     except httpx.TimeoutException:
         return HealthCheckResult(candidate.id, item_kind, False, None, round((time.monotonic() - started) * 1000.0, 2), "timeout")
     except httpx.HTTPError as exc:
@@ -108,9 +107,6 @@ def _persist(result: HealthCheckResult) -> None:
     status = "healthy" if result.success else "offline"
     checked_at = datetime.now(timezone.utc).isoformat()
     success_int = int(result.success)
-    # These columns are intentionally TEXT for SQLite/PostgreSQL compatibility.
-    # Passing CURRENT_TIMESTAMP inside CASE made PostgreSQL try to reconcile
-    # timestamptz with text, causing a DatatypeMismatch.
     if result.item_kind == "live":
         _db_execute(
             "UPDATE streams SET status=?,last_checked=?,last_success=CASE WHEN ?=1 THEN ? ELSE last_success END,"
