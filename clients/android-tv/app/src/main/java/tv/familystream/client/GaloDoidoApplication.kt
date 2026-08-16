@@ -2,6 +2,7 @@ package tv.familystream.client
 
 import android.app.Activity
 import android.app.Application
+import android.content.Intent
 import android.os.Bundle
 import android.text.TextUtils
 import android.view.View
@@ -25,12 +26,12 @@ class GaloDoidoApplication : Application(), Application.ActivityLifecycleCallbac
         val root = activity.window.decorView
         root.viewTreeObserver.addOnGlobalLayoutListener(object : ViewTreeObserver.OnGlobalLayoutListener {
             override fun onGlobalLayout() {
-                polishUi(root)
+                polishUi(activity, root)
             }
         })
     }
 
-    private fun polishUi(view: View) {
+    private fun polishUi(activity: Activity, view: View) {
         if (view is PlayerView) {
             // Dedicated-TV behavior: buffering remains internal and the stock
             // ExoPlayer timeline/controller does not pop up during normal Live TV.
@@ -61,15 +62,31 @@ class GaloDoidoApplication : Application(), Application.ActivityLifecycleCallbac
                 view.maxLines = 1
                 view.ellipsize = TextUtils.TruncateAt.END
             }
+
+            // Keep the existing MainActivity shell while routing its Live TV menu
+            // into the dedicated country hub. This avoids duplicating the whole
+            // home/catalog screen during the v0.3 migration.
+            if (activity is MainActivity && polished == "Ao Vivo") {
+                view.setOnClickListener {
+                    val serverUrl = activity.intent.getStringExtra("server_url")
+                        ?: activity.getSharedPreferences("galodoidotv", 0)
+                            .getString("server_url", BuildConfig.DEFAULT_SERVER_URL)
+                        ?: BuildConfig.DEFAULT_SERVER_URL
+                    activity.startActivity(Intent(activity, LiveCountryActivity::class.java).apply {
+                        putExtra("server_url", serverUrl)
+                    })
+                    activity.finish()
+                }
+            }
         }
 
         if (view is ViewGroup) {
-            for (index in 0 until view.childCount) polishUi(view.getChildAt(index))
+            for (index in 0 until view.childCount) polishUi(activity, view.getChildAt(index))
         }
     }
 
     override fun onActivityStarted(activity: Activity) = Unit
-    override fun onActivityResumed(activity: Activity) = polishUi(activity.window.decorView)
+    override fun onActivityResumed(activity: Activity) = polishUi(activity, activity.window.decorView)
     override fun onActivityPaused(activity: Activity) = Unit
     override fun onActivityStopped(activity: Activity) = Unit
     override fun onActivitySaveInstanceState(activity: Activity, outState: Bundle) = Unit
