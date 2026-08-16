@@ -7,7 +7,10 @@ import android.view.View
 import android.view.ViewGroup
 import android.view.ViewTreeObserver
 import android.widget.TextView
+import androidx.media3.common.util.UnstableApi
+import androidx.media3.ui.PlayerView
 
+@UnstableApi
 class GaloDoidoApplication : Application(), Application.ActivityLifecycleCallbacks {
     override fun onCreate() {
         super.onCreate()
@@ -19,12 +22,21 @@ class GaloDoidoApplication : Application(), Application.ActivityLifecycleCallbac
         val root = activity.window.decorView
         root.viewTreeObserver.addOnGlobalLayoutListener(object : ViewTreeObserver.OnGlobalLayoutListener {
             override fun onGlobalLayout() {
-                rebrand(root)
+                polishUi(root)
             }
         })
     }
 
-    private fun rebrand(view: View) {
+    private fun polishUi(view: View) {
+        if (view is PlayerView) {
+            // Keep buffering internal, like the reference Android TV player:
+            // no visible loading spinner and no controller popping up just
+            // because the stream briefly re-buffers.
+            view.setShowBuffering(PlayerView.SHOW_BUFFERING_NEVER)
+            view.controllerAutoShow = false
+            view.controllerShowTimeoutMs = 2500
+        }
+
         if (view is TextView) {
             val current = view.text?.toString().orEmpty()
             if (current.contains("FamilyStream", ignoreCase = false)) {
@@ -35,12 +47,12 @@ class GaloDoidoApplication : Application(), Application.ActivityLifecycleCallbac
             }
         }
         if (view is ViewGroup) {
-            for (index in 0 until view.childCount) rebrand(view.getChildAt(index))
+            for (index in 0 until view.childCount) polishUi(view.getChildAt(index))
         }
     }
 
     override fun onActivityStarted(activity: Activity) = Unit
-    override fun onActivityResumed(activity: Activity) = rebrand(activity.window.decorView)
+    override fun onActivityResumed(activity: Activity) = polishUi(activity.window.decorView)
     override fun onActivityPaused(activity: Activity) = Unit
     override fun onActivityStopped(activity: Activity) = Unit
     override fun onActivitySaveInstanceState(activity: Activity, outState: Bundle) = Unit
