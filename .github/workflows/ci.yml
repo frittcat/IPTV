@@ -33,6 +33,7 @@ jobs:
         run: python -m compileall -q backend providers
       - name: XML parser smoke
         run: python -c "import xml.etree.ElementTree as ET; ET.fromstring('<tv><channel id=\"x\"><display-name>x</display-name></channel></tv>'); print('xml validation ok')"
+
   docker:
     runs-on: ubuntu-latest
     steps:
@@ -44,3 +45,21 @@ jobs:
         run: docker run --rm familystream-ci ffprobe -version
       - name: Verify media probe module imports
         run: docker run --rm familystream-ci python -c "from backend.media_probe import build_ffprobe_command; print(build_ffprobe_command('http://127.0.0.1:8080/probe')[0])"
+
+  android-tv:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: android-actions/setup-android@v3
+      - name: Install Android SDK platform
+        run: sdkmanager "platforms;android-37" "build-tools;36.0.0"
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '9.4.1'
+      - name: Assemble Android TV debug APK
+        working-directory: clients/android-tv
+        run: gradle :app:assembleDebug --no-daemon --stacktrace
