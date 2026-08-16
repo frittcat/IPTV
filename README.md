@@ -4,6 +4,28 @@ FamilyStream Hub é uma camada de descoberta, seleção, classificação e publi
 
 > O projeto não contorna DRM, autenticação, tokens privados, geoblocking ou restrições de licença. Uma URL gratuita para assistir não implica direito de redistribuição.
 
+## Android TV — instalação rápida pelo Downloader
+
+Código oficial do **Downloader by AFTVnews** para a build Android TV de desenvolvimento:
+
+```text
+6093932
+```
+
+Short URL:
+
+```text
+https://aftv.news/6093932
+```
+
+O código aponta para o asset estável `FamilyStream-AndroidTV-latest.apk`. O CI substitui esse arquivo a cada nova build publicada na release `android-tv-dev`, portanto o código pode continuar o mesmo entre versões de desenvolvimento.
+
+URL de destino permanente:
+
+```text
+https://github.com/frittcat/IPTV/releases/download/android-tv-dev/FamilyStream-AndroidTV-latest.apk
+```
+
 ## Arquitetura
 
 ```mermaid
