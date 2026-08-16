@@ -44,7 +44,7 @@ def test_search_keeps_result_types(monkeypatch):
     assert payload["series"][0]["item_type"] == "series"
 
 
-def test_playback_resolve_returns_only_familystream_url_and_safe_traits(monkeypatch):
+def test_playback_resolve_returns_only_galodoidotv_url_and_safe_traits(monkeypatch):
     candidate = UpstreamCandidate(
         "stream-1",
         "https://provider.example/live/master.m3u8?token=SUPER_SECRET",
@@ -53,8 +53,18 @@ def test_playback_resolve_returns_only_familystream_url_and_safe_traits(monkeypa
     )
     monkeypatch.setattr(playback_api.gateway, "_live_candidates", lambda item_id: [candidate])
     monkeypatch.setattr(playback_api.gateway, "rank_candidates", lambda candidates, profile, kind: candidates)
-    monkeypatch.setattr(playback_api.gateway, "_probe", lambda candidate: 200)
-    monkeypatch.setattr(playback_api.gateway, "_client_base", lambda request: "http://familystream.local:8080")
+    monkeypatch.setattr(
+        playback_api.gateway,
+        "_probe_media",
+        lambda candidate: SimpleNamespace(
+            status_code=200,
+            content_type="application/vnd.apple.mpegurl",
+            mime_type="application/x-mpegURL",
+            protocol="hls",
+            container="hls",
+        ),
+    )
+    monkeypatch.setattr(playback_api.gateway, "_client_base", lambda request: "http://galodoidotv.local:8080")
     monkeypatch.setattr(
         playback_api.gateway,
         "candidate_diagnostic",
@@ -72,7 +82,7 @@ def test_playback_resolve_returns_only_familystream_url_and_safe_traits(monkeypa
     request = SimpleNamespace(headers={"x-familystream-device": "android-tv-modern"})
 
     payload = playback_api.resolve_playback("live", "channel-1", request)
-    assert payload["playback_url"] == "http://familystream.local:8080/api/v1/play/live/channel-1"
+    assert payload["playback_url"] == "http://galodoidotv.local:8080/api/v1/play/live/channel-1"
     assert payload["mime_type"] == "application/x-mpegURL"
     assert payload["video_codec"] == "hevc"
     text = repr(payload)
@@ -86,8 +96,18 @@ def test_episode_resolve_uses_opaque_episode_playback_route(monkeypatch):
     candidate = UpstreamCandidate("ep-stream", "https://provider.example/episode.mp4?secret=x", score=50)
     monkeypatch.setattr(playback_api.gateway, "_vod_candidates", lambda item_id: [candidate])
     monkeypatch.setattr(playback_api.gateway, "rank_candidates", lambda candidates, profile, kind: candidates)
-    monkeypatch.setattr(playback_api.gateway, "_probe", lambda candidate: 206)
-    monkeypatch.setattr(playback_api.gateway, "_client_base", lambda request: "https://fs.example")
+    monkeypatch.setattr(
+        playback_api.gateway,
+        "_probe_media",
+        lambda candidate: SimpleNamespace(
+            status_code=206,
+            content_type="video/mp4",
+            mime_type="video/mp4",
+            protocol="direct",
+            container="mp4",
+        ),
+    )
+    monkeypatch.setattr(playback_api.gateway, "_client_base", lambda request: "https://galodoidotv.example")
     monkeypatch.setattr(
         playback_api.gateway,
         "candidate_diagnostic",
@@ -104,6 +124,6 @@ def test_episode_resolve_uses_opaque_episode_playback_route(monkeypatch):
     )
     request = SimpleNamespace(headers={})
     payload = playback_api.resolve_playback("episode", "ep-1", request)
-    assert payload["playback_url"] == "https://fs.example/api/v1/play/episode/ep-1"
+    assert payload["playback_url"] == "https://galodoidotv.example/api/v1/play/episode/ep-1"
     assert payload["mime_type"] == "video/mp4"
     assert "provider.example" not in repr(payload)
