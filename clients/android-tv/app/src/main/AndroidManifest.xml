@@ -7,9 +7,9 @@
     <application
         android:name=".GaloDoidoApplication"
         android:allowBackup="false"
-        android:banner="@drawable/galodoidotv_banner"
-        android:icon="@drawable/galodoidotv_logo"
-        android:roundIcon="@drawable/galodoidotv_logo"
+        android:banner="@drawable/tv_banner"
+        android:icon="@drawable/galodoidotv_icon"
+        android:roundIcon="@drawable/galodoidotv_icon"
         android:label="GaloDoidoTV"
         android:theme="@style/Theme.GaloDoidoTV"
         android:usesCleartextTraffic="true">
