@@ -31,7 +31,7 @@ if (-not (Test-Path '.env')) {
     'ADULT_CONTENT=false'
     'FAMILYSTREAM_PUBLIC_URL=http://localhost:8080'
     'ADMIN_USERNAME=admin'
-    "ADMIN_PASSWORD_HASH=$encoded"
+    ("ADMIN_PASSWORD_HASH='" + $encoded + "'")
     'SCHEDULER_INTERVAL_SECONDS=3600'
   ) | Set-Content -Encoding utf8 '.env'
   Write-Host "Credencial administrativa criada: usuário admin / senha $adminPassword"
