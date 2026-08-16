@@ -54,7 +54,7 @@ def fast_sync() -> dict:
 
     def fetch_one(item):
         name, url = item
-        with httpx.Client(timeout=30, follow_redirects=True, headers={"User-Agent": "FamilyStream-Hub/0.3"}) as client:
+        with httpx.Client(timeout=30, follow_redirects=True, headers={"User-Agent": "GaloDoidoTV/0.3"}) as client:
             return name, client.get(url).raise_for_status().json()
 
     with ThreadPoolExecutor(max_workers=len(API_URLS)) as pool:
@@ -72,6 +72,7 @@ def fast_sync() -> dict:
             logos[cid] = logo.get("url")
 
     channel_rows = []
+    allowed_channel_ids: set[str] = set()
     channels_by_id = {item.get("id"): item for item in payload["channels"] if item.get("id")}
     timestamp = now()
     for cid, channel in channels_by_id.items():
@@ -87,6 +88,7 @@ def fast_sync() -> dict:
             canonical(channel.get("name", cid), cid),
             timestamp,
         ))
+        allowed_channel_ids.add(cid)
 
     safe_cache: dict[str, bool] = {}
     stream_rows = []
@@ -94,7 +96,10 @@ def fast_sync() -> dict:
     for stream in payload["streams"]:
         cid = stream.get("channel")
         url = stream.get("url", "")
-        if not cid or cid in blocked or cid not in channels_by_id or not _safe_url_cached(url, safe_cache):
+        # Streams must reference the exact filtered set that is actually inserted
+        # into channels. Checking only channels_by_id allowed NSFW channels to
+        # slip through and violate the PostgreSQL foreign key.
+        if not cid or cid not in allowed_channel_ids or not _safe_url_cached(url, safe_cache):
             continue
         sid = hashlib.sha1((cid + "|" + (stream.get("feed") or "") + "|" + url).encode()).hexdigest()
         stream_rows.append((
@@ -158,7 +163,7 @@ def fast_sync() -> dict:
     # Free-TV is independent; parse once and insert in one batch.
     free_rows = []
     try:
-        text = httpx.get(FREE_TV_URL, timeout=60, follow_redirects=True, headers={"User-Agent": "FamilyStream-Hub/0.3"}).raise_for_status().text
+        text = httpx.get(FREE_TV_URL, timeout=60, follow_redirects=True, headers={"User-Agent": "GaloDoidoTV/0.3"}).raise_for_status().text
         conn = db_connect()
         try:
             cur = conn.cursor()
