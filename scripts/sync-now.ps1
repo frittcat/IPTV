@@ -8,8 +8,8 @@ $ErrorActionPreference = 'Stop'
 if (-not (Get-Command docker -ErrorAction SilentlyContinue)) { throw 'Docker Desktop não foi encontrado.' }
 if (-not (Test-Path '.env')) { throw '.env não encontrado. Execute scripts\install.ps1 primeiro.' }
 
-Write-Host '1/4 Sincronizando catálogo Live público/autorizado...'
-docker compose exec -T backend python -c "from backend.app import sync; print(sync())" | Out-Host
+Write-Host '1/4 Sincronizando catálogo Live público/autorizado (modo rápido em lote)...'
+docker compose exec -T backend python -c "from backend.live_sync import fast_sync; print(fast_sync())" | Out-Host
 
 Write-Host ''
 Write-Host "2/4 Importando até $VodLimit filmes públicos/licenciados do Archive.org..."
