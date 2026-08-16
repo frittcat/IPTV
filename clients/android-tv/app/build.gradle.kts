@@ -5,13 +5,13 @@ plugins {
 
 android {
     namespace = "tv.familystream.client"
-    compileSdk = 37
+    compileSdk = 36
 
     defaultConfig {
         applicationId = "tv.familystream.client"
         minSdk = 23
-        targetSdk = 37
-        versionCode = 30001
+        targetSdk = 36
+        versionCode = 30002
         versionName = "0.3.0-dev"
         buildConfigField("String", "DEFAULT_SERVER_URL", "\"http://10.0.2.2:8080\"")
     }
