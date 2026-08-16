@@ -5,6 +5,8 @@ import org.json.JSONObject
 import java.net.HttpURLConnection
 import java.net.URL
 
+internal class AuthRequiredException : IllegalStateException("Sessão expirada. Entre novamente.")
+
 internal data class Channel(
     val id: String,
     val name: String,
@@ -71,12 +73,13 @@ internal class FamilyStreamApi(
     private val baseUrl: String,
     private val maxHeight: Int = 2160,
 ) {
-    private val deviceHeaders = mapOf(
-        "X-FamilyStream-Device" to "android-tv-modern",
-        "X-FamilyStream-Video-Codecs" to "hevc,h265,h264,avc",
-        "X-FamilyStream-Max-Height" to maxHeight.toString(),
-        "Accept" to "application/json",
-    )
+    private val deviceHeaders = buildMap {
+        put("X-FamilyStream-Device", "android-tv-modern")
+        put("X-FamilyStream-Video-Codecs", "hevc,h265,h264,avc")
+        put("X-FamilyStream-Max-Height", maxHeight.toString())
+        put("Accept", "application/json")
+        SessionState.token?.takeIf { it.isNotBlank() }?.let { put("Authorization", "Bearer $it") }
+    }
 
     fun home(): HomeFeed {
         val root = getObject("/api/v1/home?limit=18")
@@ -213,8 +216,11 @@ internal class FamilyStreamApi(
         }
         return try {
             val code = connection.responseCode
+            if (code == 401 || code == 403) {
+                throw AuthRequiredException()
+            }
             if (code !in 200..299) {
-                throw IllegalStateException("FamilyStream HTTP $code")
+                throw IllegalStateException("GaloDoidoTV HTTP $code")
             }
             val payload = connection.inputStream.bufferedReader().use { it.readText() }
             JSONObject(payload)
