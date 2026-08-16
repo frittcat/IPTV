@@ -7,8 +7,8 @@
         android:name=".GaloDoidoApplication"
         android:allowBackup="false"
         android:banner="@drawable/galodoidotv_banner"
-        android:icon="@drawable/galodoidotv_icon"
-        android:roundIcon="@drawable/galodoidotv_icon"
+        android:icon="@drawable/galodoidotv_logo"
+        android:roundIcon="@drawable/galodoidotv_logo"
         android:label="GaloDoidoTV"
         android:theme="@style/Theme.GaloDoidoTV"
         android:usesCleartextTraffic="true">
@@ -16,7 +16,8 @@
             android:name=".SplashActivity"
             android:configChanges="keyboard|keyboardHidden|navigation|orientation|screenSize"
             android:exported="true"
-            android:screenOrientation="landscape">
+            android:screenOrientation="landscape"
+            android:theme="@style/Theme.GaloDoidoTV.Splash">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LEANBACK_LAUNCHER" />
