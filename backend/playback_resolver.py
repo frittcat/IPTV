@@ -63,8 +63,14 @@ class StreamTraits:
     protocol: str
     video_codec: str | None = None
     audio_codec: str | None = None
+    width: int | None = None
     height: int | None = None
     container: str | None = None
+    bitrate: int | None = None
+    fps: float | None = None
+    hdr: str | None = None
+    audio_channels: float | None = None
+    source: str = "hint"
 
 
 _CODEC_PATTERNS = (
@@ -72,6 +78,20 @@ _CODEC_PATTERNS = (
     (re.compile(r"(?:^|[._\-/])(?:h264|avc|x264)(?:[._\-/]|$)", re.I), "h264"),
 )
 _RESOLUTION_RE = re.compile(r"(?:^|[^0-9])(2160|1440|1080|720|576|480)p?(?:[^0-9]|$)", re.I)
+
+
+def _int(value) -> int | None:
+    try:
+        return int(value) if value not in (None, "") else None
+    except (TypeError, ValueError):
+        return None
+
+
+def _float(value) -> float | None:
+    try:
+        return float(value) if value not in (None, "") else None
+    except (TypeError, ValueError):
+        return None
 
 
 def infer_traits(url: str) -> StreamTraits:
@@ -97,7 +117,30 @@ def infer_traits(url: str) -> StreamTraits:
 
     resolution = _RESOLUTION_RE.search(searchable)
     height = int(resolution.group(1)) if resolution else None
-    return StreamTraits(protocol=protocol, video_codec=codec, height=height, container=container)
+    return StreamTraits(protocol=protocol, video_codec=codec, height=height, container=container, source="hint")
+
+
+def measured_traits(technical: Mapping[str, object] | None) -> StreamTraits | None:
+    if not technical or technical.get("probe_status") != "ok":
+        return None
+    protocol = str(technical.get("protocol") or "http").lower()
+    return StreamTraits(
+        protocol=protocol,
+        video_codec=(str(technical["video_codec"]).lower() if technical.get("video_codec") else None),
+        audio_codec=(str(technical["audio_codec"]).lower() if technical.get("audio_codec") else None),
+        width=_int(technical.get("width")),
+        height=_int(technical.get("height")),
+        container=(str(technical["container"]).lower() if technical.get("container") else None),
+        bitrate=_int(technical.get("bitrate")),
+        fps=_float(technical.get("fps")),
+        hdr=(str(technical["hdr"]) if technical.get("hdr") else None),
+        audio_channels=_float(technical.get("audio_channels")),
+        source="probe",
+    )
+
+
+def traits_for_candidate(candidate: UpstreamCandidate, technical: Mapping[str, object] | None = None) -> StreamTraits:
+    return measured_traits(technical) or infer_traits(candidate.url)
 
 
 def get_profile(profile_id: str | None) -> DeviceProfile:
@@ -133,12 +176,19 @@ def profile_from_headers(headers: Mapping[str, str]) -> DeviceProfile:
     return replace(base, video_codecs=codecs, max_height=max_height)
 
 
-def compatibility_score(candidate: UpstreamCandidate, profile: DeviceProfile, kind: str) -> float:
-    traits = infer_traits(candidate.url)
+def compatibility_score(
+    candidate: UpstreamCandidate,
+    profile: DeviceProfile,
+    kind: str,
+    traits: StreamTraits | None = None,
+) -> float:
+    traits = traits or infer_traits(candidate.url)
     value = float(candidate.score)
 
     if traits.video_codec and traits.video_codec not in profile.video_codecs:
         return -10000.0
+    if traits.audio_codec and traits.audio_codec not in profile.audio_codecs:
+        value -= 180.0
     if traits.height and traits.height > profile.max_height:
         value -= 250.0
 
@@ -159,8 +209,11 @@ def compatibility_score(candidate: UpstreamCandidate, profile: DeviceProfile, ki
         value += 6.0
 
     if traits.height:
-        # Prefer the best resolution that still fits the client profile.
         value += min(traits.height, profile.max_height) / 240.0
+
+    # Measured data is more trustworthy than filename/URL hints.
+    if traits.source == "probe":
+        value += 4.0
 
     return value
 
@@ -169,26 +222,45 @@ def rank_candidates(
     candidates: list[UpstreamCandidate],
     profile: DeviceProfile,
     kind: str,
+    technical_profiles: Mapping[str, Mapping[str, object]] | None = None,
 ) -> list[UpstreamCandidate]:
+    technical_profiles = technical_profiles or {}
     return sorted(
         candidates,
-        key=lambda candidate: compatibility_score(candidate, profile, kind),
+        key=lambda candidate: compatibility_score(
+            candidate,
+            profile,
+            kind,
+            traits_for_candidate(candidate, technical_profiles.get(candidate.id)),
+        ),
         reverse=True,
     )
 
 
-def candidate_diagnostic(candidate: UpstreamCandidate, profile: DeviceProfile, kind: str) -> dict[str, object]:
-    traits = infer_traits(candidate.url)
+def candidate_diagnostic(
+    candidate: UpstreamCandidate,
+    profile: DeviceProfile,
+    kind: str,
+    technical: Mapping[str, object] | None = None,
+) -> dict[str, object]:
+    traits = traits_for_candidate(candidate, technical)
     return {
         "id": candidate.id,
         "profile": profile.id,
         "kind": kind,
+        "traits_source": traits.source,
         "protocol": traits.protocol,
-        "video_codec_hint": traits.video_codec,
-        "height_hint": traits.height,
-        "container_hint": traits.container,
+        "video_codec": traits.video_codec,
+        "audio_codec": traits.audio_codec,
+        "width": traits.width,
+        "height": traits.height,
+        "container": traits.container,
+        "bitrate": traits.bitrate,
+        "fps": traits.fps,
+        "hdr": traits.hdr,
+        "audio_channels": traits.audio_channels,
         "base_score": candidate.score,
-        "resolver_score": compatibility_score(candidate, profile, kind),
+        "resolver_score": compatibility_score(candidate, profile, kind, traits),
         # Deliberately no upstream URL or headers here: diagnostics must never
         # become a secret/token exfiltration path.
     }
