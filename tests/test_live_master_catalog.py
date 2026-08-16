@@ -25,6 +25,7 @@ def test_br_master_contains_premiere_one_through_eight_as_p0_targets():
 def test_matching_is_accent_and_punctuation_tolerant():
     assert match_channel("sportv 2")["name"] == "SporTV 2"
     assert match_channel("HBO +")["name"] == "HBO Plus"
+    assert match_channel("SportyNet+")["name"] == "SportyNet+"
     assert match_channel("TV Ra Tim Bum")["name"] == "TV Rá Tim Bum"
 
 
