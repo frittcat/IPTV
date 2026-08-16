@@ -48,7 +48,7 @@ Invoke-GaloDoidoPython -Stage 'Etapa 4/5: estatisticas' -Code "from backend.app 
 
 Write-Host ''
 Write-Host '5/5 Cobertura da Grade Master Brasil...'
-Invoke-GaloDoidoPython -Stage 'Etapa 5/5: cobertura BR' -Code "import json; from backend.live_master_catalog import coverage_report; from backend.app import db_execute; r=coverage_report(db_execute); print(json.dumps({'target':r['target'],'known':r['known'],'playable':r['playable'],'missing_or_unplayable':r['missing_or_unplayable'],'coverage_percent':r['coverage_percent'],'p0_missing':[x['name'] for x in r['items'] if x['priority']=='P0' and not x['playable']]}, ensure_ascii=False, indent=2))"
+Invoke-GaloDoidoPython -Stage 'Etapa 5/5: cobertura BR' -Code "import json; from backend.live_master_catalog import coverage_report; from backend.app import db_execute; r=coverage_report(db_execute); p0=[{'name':x['name'],'state':x['state'],'sources':x['source_count'],'healthy_sources':x['healthy_sources']} for x in r['items'] if x['priority']=='P0' and not x['playable']]; print(json.dumps({'target':r['target'],'known':r['known'],'with_source':r['with_source'],'healthy':r['healthy'],'playable':r['playable'],'missing_or_unplayable':r['missing_or_unplayable'],'coverage_percent':r['coverage_percent'],'states':r['states'],'p0_missing':p0}, ensure_ascii=False, indent=2))"
 
 Write-Host ''
 Write-Host 'Sincronizacao concluida.'
