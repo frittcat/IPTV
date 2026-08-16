@@ -1,9 +1,9 @@
-$ErrorActionPreference = 'Stop'
-
 param(
   [int]$LiveHealth = 100,
   [int]$VodLimit = 20
 )
+
+$ErrorActionPreference = 'Stop'
 
 if (-not (Get-Command docker -ErrorAction SilentlyContinue)) { throw 'Docker Desktop não foi encontrado.' }
 if (-not (Test-Path '.env')) { throw '.env não encontrado. Execute scripts\install.ps1 primeiro.' }
