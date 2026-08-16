@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import time
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from typing import Any
 
@@ -130,13 +131,21 @@ def _refresh_publication() -> None:
     export_files()
 
 
+def _check_group(kind: str, candidates: list[UpstreamCandidate]) -> list[HealthCheckResult]:
+    if not candidates:
+        return []
+    workers = max(1, min(12, len(candidates)))
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        return list(pool.map(lambda candidate: check_candidate(candidate, kind), candidates))
+
+
 def run_health_batch(live_limit: int = 20, vod_limit: int = 10) -> dict[str, Any]:
     results: list[HealthCheckResult] = []
     for kind, candidates in (("live", _live_due(live_limit)), ("vod", _vod_due(vod_limit))):
-        for candidate in candidates:
-            result = check_candidate(candidate, kind)
+        checked = _check_group(kind, candidates)
+        for result in checked:
             _persist(result)
-            results.append(result)
+        results.extend(checked)
     _refresh_publication()
     successes = sum(1 for item in results if item.success)
     return {
