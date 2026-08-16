@@ -1,7 +1,7 @@
 name: FamilyStream CI
 on:
   push:
-    branches: [main]
+    branches: [main, v0.3-platform]
   pull_request:
     branches: [main]
 jobs:
@@ -48,6 +48,8 @@ jobs:
 
   android-tv:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-java@v5
@@ -70,3 +72,18 @@ jobs:
           path: clients/android-tv/app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
           retention-days: 14
+      - name: Publish stable latest APK URL
+        if: github.event_name == 'push' && github.ref == 'refs/heads/v0.3-platform'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cp clients/android-tv/app/build/outputs/apk/debug/app-debug.apk FamilyStream-AndroidTV-latest.apk
+          if gh release view android-tv-dev >/dev/null 2>&1; then
+            gh release upload android-tv-dev FamilyStream-AndroidTV-latest.apk --clobber
+          else
+            gh release create android-tv-dev FamilyStream-AndroidTV-latest.apk \
+              --title "FamilyStream Android TV development" \
+              --notes "Development APK. The asset name stays stable so Downloader codes can keep pointing to the same URL." \
+              --prerelease \
+              --target "$GITHUB_SHA"
+          fi
