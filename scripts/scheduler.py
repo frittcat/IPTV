@@ -14,7 +14,9 @@ from backend.live_sync import fast_sync
 
 def run():
     init_db()
-    last_live_sync = 0.0
+    # Initial discovery is explicit via scripts/sync-now.ps1. Starting/restarting
+    # the scheduler must not launch a second full catalog sync concurrently.
+    last_live_sync = time.time()
     last_report = 0.0
     interval = max(300, int(os.getenv("SCHEDULER_INTERVAL_SECONDS", "900")))
     live_limit = max(1, min(200, int(os.getenv("HEALTH_LIVE_BATCH", "30"))))
