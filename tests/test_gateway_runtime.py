@@ -1,5 +1,8 @@
+import pytest
+from fastapi import HTTPException
+
 from backend.app_v03 import app
-from backend.gateway_runtime import GatewaySessionStore
+from backend.gateway_runtime import GatewaySessionStore, _read_limited
 
 
 def test_v03_replaces_legacy_media_routes_once():
@@ -22,8 +25,6 @@ def test_hls_registry_keeps_provider_url_and_headers_server_side():
     upstream = "https://media.example/live/master.m3u8?token=private-token"
     resource_id = store.register(session.id, upstream)
 
-    # Client-facing identifiers are opaque random values. Neither credentials nor
-    # tokenized provider URLs have to be embedded in rewritten HLS manifests.
     assert "private-token" not in session.id
     assert "private-token" not in resource_id
     assert "provider-secret" not in session.id
@@ -43,3 +44,11 @@ def test_unknown_hls_resource_is_not_resolved():
     session = store.create({})
     assert store.resolve(session.id, "not-a-real-resource") is None
     assert store.resolve("not-a-real-session", "x") is None
+
+
+def test_bounded_manifest_reader_reads_iterator_without_response_read_size_argument():
+    assert _read_limited(iter([b"#EXTM3U\n", b"segment.ts\n"]), 1024) == b"#EXTM3U\nsegment.ts\n"
+
+    with pytest.raises(HTTPException) as exc:
+        _read_limited(iter([b"1234", b"5678"]), 7)
+    assert exc.value.status_code == 502
