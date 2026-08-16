@@ -23,6 +23,11 @@ from backend.app import (
     stats,
 )
 
+# GaloDoidoTV Live TV is intentionally focused on these three markets.
+# Keeping the filter at ingestion level avoids spending health-check capacity on
+# thousands of channels that will never be shown by the Android TV client.
+TARGET_COUNTRIES = {"BR", "PT", "FR"}
+
 
 def _placeholder(sql: str, postgres: bool) -> str:
     return sql.replace("?", "%s") if postgres else sql
@@ -41,13 +46,16 @@ def _safe_url_cached(url: str, cache: dict[str, bool]) -> bool:
     return cache[key]
 
 
-def fast_sync() -> dict:
-    """Synchronize public/authorized live catalog using batched DB transactions.
+def _target_country(value: object) -> bool:
+    return str(value or "").strip().upper() in TARGET_COUNTRIES
 
-    The legacy sync committed one row at a time, which is extremely slow with
-    PostgreSQL in Docker. This implementation downloads the source APIs in
-    parallel, validates hosts once per origin, and uses executemany batches.
-    Existing stream health/publication state is preserved during metadata sync.
+
+def fast_sync() -> dict:
+    """Synchronize public/authorized BR/PT/FR live catalog in batched transactions.
+
+    Only public/authorized source URLs are ingested. Pay-TV channel metadata may
+    exist in upstream catalogs, but a channel is published only when a usable,
+    healthy source already available to GaloDoidoTV passes the normal checks.
     """
     init_db()
     started = now()
@@ -76,12 +84,14 @@ def fast_sync() -> dict:
     channels_by_id = {item.get("id"): item for item in payload["channels"] if item.get("id")}
     timestamp = now()
     for cid, channel in channels_by_id.items():
+        if not _target_country(channel.get("country")):
+            continue
         if cid in blocked or channel.get("is_nsfw"):
             continue
         channel_rows.append((
             cid,
             channel.get("name", cid),
-            channel.get("country"),
+            str(channel.get("country") or "").upper(),
             json.dumps(channel.get("categories", [])),
             json.dumps(channel.get("alt_names", [])),
             logos.get(cid),
@@ -96,9 +106,6 @@ def fast_sync() -> dict:
     for stream in payload["streams"]:
         cid = stream.get("channel")
         url = stream.get("url", "")
-        # Streams must reference the exact filtered set that is actually inserted
-        # into channels. Checking only channels_by_id allowed NSFW channels to
-        # slip through and violate the PostgreSQL foreign key.
         if not cid or cid not in allowed_channel_ids or not _safe_url_cached(url, safe_cache):
             continue
         sid = hashlib.sha1((cid + "|" + (stream.get("feed") or "") + "|" + url).encode()).hexdigest()
@@ -160,14 +167,15 @@ def fast_sync() -> dict:
     finally:
         conn.close()
 
-    # Free-TV is independent; parse once and insert in one batch.
+    # Free-TV remains an independent public source, but only names that map to
+    # BR/PT/FR channel metadata are accepted.
     free_rows = []
     try:
         text = httpx.get(FREE_TV_URL, timeout=60, follow_redirects=True, headers={"User-Agent": "GaloDoidoTV/0.3"}).raise_for_status().text
         conn = db_connect()
         try:
             cur = conn.cursor()
-            cur.execute("SELECT id,name FROM channels")
+            cur.execute("SELECT id,name FROM channels WHERE country IN ('BR','PT','FR')")
             name_map = {norm(name): cid for cid, name in cur.fetchall()}
         finally:
             conn.close()
@@ -210,6 +218,18 @@ def fast_sync() -> dict:
     postgres = not conn.__class__.__module__.startswith("sqlite3")
     try:
         cur = conn.cursor()
+        # Remove legacy/non-target stream inventory so the recurring health worker
+        # spends all of its budget on the three countries visible in the app.
+        cur.execute(
+            "DELETE FROM streams WHERE channel_id IN ("
+            "SELECT id FROM channels WHERE COALESCE(country,'') NOT IN ('BR','PT','FR')"
+            ")"
+        )
+        cur.execute(
+            "DELETE FROM epg_sources WHERE channel_id IN ("
+            "SELECT id FROM channels WHERE COALESCE(country,'') NOT IN ('BR','PT','FR')"
+            ")"
+        )
         cur.execute("UPDATE streams SET primary_stream=0")
         cur.execute(
             "UPDATE streams SET primary_stream=1 WHERE id IN ("
@@ -217,13 +237,15 @@ def fast_sync() -> dict:
             ")"
         )
         cur.execute(_placeholder(
-            "UPDATE channels SET published=CASE WHEN id IN (SELECT channel_id FROM streams WHERE score>=? AND status IN ('healthy','degraded') GROUP BY channel_id) THEN 1 ELSE 0 END",
+            "UPDATE channels SET published=CASE WHEN country IN ('BR','PT','FR') AND id IN ("
+            "SELECT channel_id FROM streams WHERE score>=? AND status IN ('healthy','degraded') GROUP BY channel_id"
+            ") THEN 1 ELSE 0 END",
             postgres,
         ), (MIN_SCORE,))
         cur.execute(_placeholder(
             "INSERT INTO sync_runs(source,started_at,finished_at,discovered,published) VALUES(?,?,?,?,?)",
             postgres,
-        ), ("iptv-org", started, now(), len(stream_rows) + len(free_rows), 0))
+        ), ("iptv-org-br-pt-fr", started, now(), len(stream_rows) + len(free_rows), 0))
         conn.commit()
     finally:
         conn.close()
@@ -232,6 +254,7 @@ def fast_sync() -> dict:
     result = stats()
     result.update({
         "status": "ok",
+        "countries": sorted(TARGET_COUNTRIES),
         "streams_imported": len(stream_rows) + len(free_rows),
         "channels_imported": len(channel_rows),
         "epg_sources_imported": len(guide_rows),
