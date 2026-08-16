@@ -48,24 +48,33 @@ def resolve_playback(kind: str, item_id: str, request: Request):
     profile = profile_from_headers(request.headers)
     ranked = gateway.rank_candidates(candidates, profile, resolver_kind)
     selected = None
+    detected = None
     for candidate in ranked:
-        status = gateway._probe(candidate)
-        if status is not None and upstream_status_usable(status):
+        probe = gateway._probe_media(candidate)
+        if (
+            probe.status_code is not None
+            and upstream_status_usable(probe.status_code)
+            and probe.mime_type is not None
+        ):
             selected = candidate
+            detected = probe
             break
-    if selected is None:
+    if selected is None or detected is None:
         raise HTTPException(502, "No usable upstream media source")
 
     diagnostic = gateway.candidate_diagnostic(selected, profile, resolver_kind)
     path = _playback_path(kind, item_id)
+    mime_type = detected.mime_type or _mime_type(diagnostic)
+    protocol = detected.protocol or diagnostic.get("protocol")
+    container = detected.container or diagnostic.get("container")
     return {
         "kind": kind,
         "item_id": item_id,
         "profile": profile.id,
         "playback_url": f"{gateway._client_base(request)}{path}",
-        "mime_type": _mime_type(diagnostic),
-        "protocol": diagnostic.get("protocol"),
-        "container": diagnostic.get("container"),
+        "mime_type": mime_type,
+        "protocol": protocol,
+        "container": container,
         "video_codec": diagnostic.get("video_codec"),
         "audio_codec": diagnostic.get("audio_codec"),
         "width": diagnostic.get("width"),
