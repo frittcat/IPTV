@@ -5,6 +5,7 @@ import secrets
 import threading
 import time
 from dataclasses import dataclass, field
+from typing import Iterator
 
 import httpx
 from fastapi import APIRouter, HTTPException, Request
@@ -47,11 +48,7 @@ class MediaProbeInfo:
 
 
 class GatewaySessionStore:
-    """Opaque, short-lived HLS resource registry.
-
-    Upstream URLs (which may contain provider tokens) never appear in client-facing
-    manifests. Clients receive random session/resource identifiers only.
-    """
+    """Opaque, short-lived registry for HLS resources and provider headers."""
 
     def __init__(self, ttl_seconds: int = 7200):
         self.ttl_seconds = ttl_seconds
@@ -114,13 +111,11 @@ PROBE_PREFIX_BYTES = 64 * 1024
 
 def _db_execute(sql: str, params: tuple = (), fetch: bool = False):
     from backend.app import db_execute
-
     return db_execute(sql, params, fetch)
 
 
 def _safe_url(url: str) -> bool:
     from backend.app import safe_url
-
     return safe_url(url)
 
 
@@ -158,7 +153,14 @@ def _vod_candidates(vod_id: str) -> list[UpstreamCandidate]:
                 headers = {}
         except (TypeError, ValueError, json.JSONDecodeError):
             headers = {}
-        result.append(UpstreamCandidate(sid, url, {str(k): str(v) for k, v in headers.items()}, float(score or 0)))
+        result.append(
+            UpstreamCandidate(
+                sid,
+                url,
+                {str(key): str(value) for key, value in headers.items()},
+                float(score or 0),
+            )
+        )
     return result
 
 
@@ -190,7 +192,7 @@ def _sniff_media(content_type: str | None, url: str, prefix: bytes = b"") -> tup
         return "application/x-mpegURL", "hls", "hls"
     if media_type in {"video/mp4", "application/mp4"} or (len(prefix) >= 12 and b"ftyp" in prefix[:32]):
         return "video/mp4", "direct", "mp4"
-    if media_type in {"video/mp2t", "video/mpegts", "application/vnd.apple.mpegurl.audio"} or _ts_prefix(prefix):
+    if media_type in {"video/mp2t", "video/mpegts"} or _ts_prefix(prefix):
         return "video/mp2t", "direct", "mpegts"
     if media_type in {"video/x-matroska", "application/x-matroska"} or prefix.startswith(b"\x1aE\xdf\xa3"):
         return "video/x-matroska", "direct", "matroska"
@@ -199,28 +201,40 @@ def _sniff_media(content_type: str | None, url: str, prefix: bytes = b"") -> tup
     return None, None, None
 
 
-def _probe_media(candidate: UpstreamCandidate) -> MediaProbeInfo:
-    """Validate that an upstream is not just HTTP-200 but actual media.
+def _read_limited(iterator: Iterator[bytes], limit: int, initial: bytes = b"") -> bytes:
+    """Read a streamed manifest with a hard upper bound.
 
-    IPTV endpoints frequently answer HEAD with 200 while GET returns an HTML page,
-    geo-block message, or an extensionless HLS manifest. We therefore use HEAD as
-    a cheap hint and perform a bounded GET when the format is not already certain.
+    httpx.Response.read() does not accept a byte-count argument. The previous
+    gateway passed MAX_MANIFEST_BYTES to Response.read(), which raised TypeError
+    and turned every HLS playback request into HTTP 500.
     """
+    chunks = [initial] if initial else []
+    size = len(initial)
+    for chunk in iterator:
+        size += len(chunk)
+        if size > limit:
+            raise HTTPException(502, "HLS manifest exceeds gateway limit")
+        chunks.append(chunk)
+    return b"".join(chunks)
+
+
+def _probe_media(candidate: UpstreamCandidate) -> MediaProbeInfo:
+    """Validate status and identify actual media rather than trusting HTTP 200."""
     if not _safe_url(candidate.url):
         return MediaProbeInfo(None)
 
     try:
         with httpx.Client(timeout=PROBE_TIMEOUT, follow_redirects=True) as client:
-            head_status: int | None = None
             head_content_type: str | None = None
             try:
                 head = client.head(candidate.url, headers=candidate.headers)
-                head_status = head.status_code
                 head_content_type = head.headers.get("content-type")
-                if upstream_status_usable(head_status):
-                    mime, protocol, container = _sniff_media(head_content_type, candidate.url)
+                if upstream_status_usable(head.status_code):
+                    # HEAD may confirm a real media content type, but an .m3u8 URL
+                    # alone is not enough: some origins return HTML error pages.
+                    mime, protocol, container = _sniff_media(head_content_type, "")
                     if mime is not None:
-                        return MediaProbeInfo(head_status, head_content_type, mime, protocol, container)
+                        return MediaProbeInfo(head.status_code, head_content_type, mime, protocol, container)
             except httpx.HTTPError:
                 pass
 
@@ -254,6 +268,144 @@ def _proxy_resource_url(request: Request, session_id: str, absolute_url: str) ->
     return f"{_client_base(request)}/api/v1/gateway/hls/{session_id}/{rid}"
 
 
+def _manifest_response(
+    payload: bytes,
+    *,
+    upstream_url: str,
+    request: Request,
+    session_id: str,
+    status_code: int,
+    outgoing_headers: dict[str, str],
+) -> Response:
+    manifest = payload.decode("utf-8", errors="replace")
+    rewritten = rewrite_hls_manifest(
+        manifest,
+        upstream_url,
+        lambda child_url: _proxy_resource_url(request, session_id, child_url),
+    )
+    outgoing_headers.pop("Content-Length", None)
+    outgoing_headers.pop("content-length", None)
+    outgoing_headers["Cache-Control"] = "no-store"
+    return Response(
+        rewritten,
+        status_code=status_code,
+        media_type="application/vnd.apple.mpegurl",
+        headers=outgoing_headers,
+    )
+
+
+def _relay_open_response(
+    response: httpx.Response,
+    client: httpx.Client,
+    request: Request,
+    *,
+    upstream_url: str,
+    provider_headers: dict[str, str],
+    profile_id: str,
+    session_id: str | None = None,
+):
+    outgoing_headers = response_headers_for_client(response.headers)
+    outgoing_headers["X-GaloDoidoTV-Device-Profile"] = profile_id
+
+    if request.method == "HEAD":
+        status = response.status_code
+        response.close()
+        client.close()
+        return PlainTextResponse("", status_code=status, headers=outgoing_headers)
+
+    content_type = response.headers.get("content-type")
+
+    # Definite HLS by response type or URL: consume exactly one response iterator.
+    if is_hls(content_type, upstream_url):
+        try:
+            payload = _read_limited(response.iter_bytes(64 * 1024), MAX_MANIFEST_BYTES)
+        finally:
+            status = response.status_code
+            response.close()
+            client.close()
+        active_session = session_id
+        if active_session is None:
+            active_session = SESSIONS.create(provider_headers, profile_id=profile_id).id
+        return _manifest_response(
+            payload,
+            upstream_url=upstream_url,
+            request=request,
+            session_id=active_session,
+            status_code=status,
+            outgoing_headers=outgoing_headers,
+        )
+
+    # For direct media types we can relay immediately without consuming a prefix.
+    mime, protocol, _container = _sniff_media(content_type, "")
+    if mime is not None and protocol != "hls":
+        def direct_body():
+            try:
+                for chunk in response.iter_bytes(256 * 1024):
+                    yield chunk
+            finally:
+                response.close()
+                client.close()
+
+        return StreamingResponse(
+            direct_body(),
+            status_code=response.status_code,
+            media_type=mime or content_type,
+            headers=outgoing_headers,
+        )
+
+    # Unknown/extensionless response: sniff a prefix once and continue using the
+    # very same iterator so no bytes are lost and httpx never sees StreamConsumed.
+    iterator = response.iter_bytes(64 * 1024)
+    try:
+        first = next(iterator, b"")
+    except httpx.HTTPError as exc:
+        response.close()
+        client.close()
+        raise HTTPException(502, f"Upstream media read failed: {type(exc).__name__}") from exc
+
+    mime, protocol, _container = _sniff_media(content_type, upstream_url, first)
+    if protocol == "hls":
+        try:
+            payload = _read_limited(iterator, MAX_MANIFEST_BYTES, initial=first)
+        finally:
+            status = response.status_code
+            response.close()
+            client.close()
+        active_session = session_id
+        if active_session is None:
+            active_session = SESSIONS.create(provider_headers, profile_id=profile_id).id
+        return _manifest_response(
+            payload,
+            upstream_url=upstream_url,
+            request=request,
+            session_id=active_session,
+            status_code=status,
+            outgoing_headers=outgoing_headers,
+        )
+
+    if mime is None:
+        response.close()
+        client.close()
+        raise HTTPException(502, "Upstream response is not recognized media")
+
+    def sniffed_body():
+        try:
+            if first:
+                yield first
+            for chunk in iterator:
+                yield chunk
+        finally:
+            response.close()
+            client.close()
+
+    return StreamingResponse(
+        sniffed_body(),
+        status_code=response.status_code,
+        media_type=mime or content_type,
+        headers=outgoing_headers,
+    )
+
+
 def _stream_response(candidate: UpstreamCandidate, request: Request, profile_id: str = "generic"):
     upstream_headers = request_headers_for_upstream(candidate.headers, request.headers)
     client = httpx.Client(timeout=STREAM_TIMEOUT, follow_redirects=True)
@@ -270,105 +422,13 @@ def _stream_response(candidate: UpstreamCandidate, request: Request, profile_id:
         client.close()
         raise HTTPException(502, f"Upstream media rejected request ({status})")
 
-    outgoing_headers = response_headers_for_client(response.headers)
-    outgoing_headers["X-GaloDoidoTV-Device-Profile"] = profile_id
-
-    if request.method == "HEAD":
-        response.close()
-        client.close()
-        return PlainTextResponse("", status_code=response.status_code, headers=outgoing_headers)
-
-    content_type = response.headers.get("content-type")
-    if is_hls(content_type, candidate.url):
-        try:
-            payload = response.read(MAX_MANIFEST_BYTES + 1)
-        finally:
-            response.close()
-            client.close()
-        if len(payload) > MAX_MANIFEST_BYTES:
-            raise HTTPException(502, "HLS manifest exceeds gateway limit")
-        manifest = payload.decode("utf-8", errors="replace")
-        session = SESSIONS.create(candidate.headers, profile_id=profile_id)
-        rewritten = rewrite_hls_manifest(
-            manifest,
-            candidate.url,
-            lambda url: _proxy_resource_url(request, session.id, url),
-        )
-        outgoing_headers.pop("Content-Length", None)
-        outgoing_headers.pop("content-length", None)
-        outgoing_headers["Cache-Control"] = "no-store"
-        return Response(
-            rewritten,
-            status_code=response.status_code,
-            media_type="application/vnd.apple.mpegurl",
-            headers=outgoing_headers,
-        )
-
-    # Some IPTV origins serve extensionless HLS with application/octet-stream or
-    # text/plain. Sniff a bounded prefix before deciding to relay it as a direct
-    # byte stream so Android TV receives a real HLS manifest from the gateway.
-    if not is_hls(content_type, candidate.url):
-        try:
-            first = next(response.iter_bytes(PROBE_PREFIX_BYTES), b"")
-        except httpx.HTTPError:
-            first = b""
-        mime, protocol, _container = _sniff_media(content_type, candidate.url, first)
-        if protocol == "hls":
-            try:
-                remainder = b"".join(response.iter_bytes())
-                payload = first + remainder
-            finally:
-                response.close()
-                client.close()
-            if len(payload) > MAX_MANIFEST_BYTES:
-                raise HTTPException(502, "HLS manifest exceeds gateway limit")
-            manifest = payload.decode("utf-8", errors="replace")
-            session = SESSIONS.create(candidate.headers, profile_id=profile_id)
-            rewritten = rewrite_hls_manifest(
-                manifest,
-                candidate.url,
-                lambda url: _proxy_resource_url(request, session.id, url),
-            )
-            outgoing_headers.pop("Content-Length", None)
-            outgoing_headers.pop("content-length", None)
-            outgoing_headers["Cache-Control"] = "no-store"
-            return Response(
-                rewritten,
-                status_code=response.status_code,
-                media_type="application/vnd.apple.mpegurl",
-                headers=outgoing_headers,
-            )
-
-        def body_with_prefix():
-            try:
-                if first:
-                    yield first
-                for chunk in response.iter_bytes(256 * 1024):
-                    yield chunk
-            finally:
-                response.close()
-                client.close()
-
-        return StreamingResponse(
-            body_with_prefix(),
-            status_code=response.status_code,
-            media_type=mime or content_type,
-            headers=outgoing_headers,
-        )
-
-    def body():
-        try:
-            for chunk in response.iter_bytes(256 * 1024):
-                yield chunk
-        finally:
-            response.close()
-            client.close()
-
-    return StreamingResponse(
-        body(),
-        status_code=response.status_code,
-        media_type=content_type,
-        headers=outgoing_headers,
+    return _relay_open_response(
+        response,
+        client,
+        request,
+        upstream_url=candidate.url,
+        provider_headers=candidate.headers,
+        profile_id=profile_id,
     )
 
 
@@ -379,7 +439,6 @@ def _play(candidates: list[UpstreamCandidate], request: Request, not_found: str,
     profile = profile_from_headers(request.headers)
     ranked = rank_candidates(candidates, profile, kind)
     attempted = 0
-
     for candidate in ranked:
         probe = _probe_media(candidate)
         if probe.status_code is None or not upstream_status_usable(probe.status_code) or probe.mime_type is None:
@@ -483,49 +542,12 @@ def hls_resource(session_id: str, resource_id: str, request: Request):
         client.close()
         raise HTTPException(502, f"HLS resource rejected request ({status})")
 
-    outgoing_headers = response_headers_for_client(response.headers)
-    outgoing_headers["X-GaloDoidoTV-Device-Profile"] = session.profile_id
-    if request.method == "HEAD":
-        response.close()
-        client.close()
-        return PlainTextResponse("", status_code=response.status_code, headers=outgoing_headers)
-
-    content_type = response.headers.get("content-type")
-    if is_hls(content_type, url):
-        try:
-            payload = response.read(MAX_MANIFEST_BYTES + 1)
-        finally:
-            response.close()
-            client.close()
-        if len(payload) > MAX_MANIFEST_BYTES:
-            raise HTTPException(502, "HLS manifest exceeds gateway limit")
-        manifest = payload.decode("utf-8", errors="replace")
-        rewritten = rewrite_hls_manifest(
-            manifest,
-            url,
-            lambda child_url: _proxy_resource_url(request, session_id, child_url),
-        )
-        outgoing_headers.pop("Content-Length", None)
-        outgoing_headers.pop("content-length", None)
-        outgoing_headers["Cache-Control"] = "no-store"
-        return Response(
-            rewritten,
-            status_code=response.status_code,
-            media_type="application/vnd.apple.mpegurl",
-            headers=outgoing_headers,
-        )
-
-    def body():
-        try:
-            for chunk in response.iter_bytes(256 * 1024):
-                yield chunk
-        finally:
-            response.close()
-            client.close()
-
-    return StreamingResponse(
-        body(),
-        status_code=response.status_code,
-        media_type=content_type,
-        headers=outgoing_headers,
+    return _relay_open_response(
+        response,
+        client,
+        request,
+        upstream_url=url,
+        provider_headers=session.headers,
+        profile_id=session.profile_id,
+        session_id=session_id,
     )
