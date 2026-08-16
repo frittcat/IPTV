@@ -72,20 +72,22 @@ jobs:
           path: clients/android-tv/app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
           retention-days: 14
-      - name: Publish stable latest APK URL
+      - name: Publish stable GaloDoidoTV APK URL
         if: github.event_name == 'push' && github.ref == 'refs/heads/v0.3-platform'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           cp clients/android-tv/app/build/outputs/apk/debug/app-debug.apk GaloDoidoTV-AndroidTV-latest.apk
-          # Compatibility alias keeps the existing Downloader code 6093932 working.
-          cp clients/android-tv/app/build/outputs/apk/debug/app-debug.apk FamilyStream-AndroidTV-latest.apk
           if gh release view android-tv-dev >/dev/null 2>&1; then
-            gh release upload android-tv-dev GaloDoidoTV-AndroidTV-latest.apk FamilyStream-AndroidTV-latest.apk --clobber
-          else
-            gh release create android-tv-dev GaloDoidoTV-AndroidTV-latest.apk FamilyStream-AndroidTV-latest.apk \
+            gh release delete-asset android-tv-dev FamilyStream-AndroidTV-latest.apk -y >/dev/null 2>&1 || true
+            gh release upload android-tv-dev GaloDoidoTV-AndroidTV-latest.apk --clobber
+            gh release edit android-tv-dev \
               --title "GaloDoidoTV Android TV development" \
-              --notes "Development APK. GaloDoidoTV is the active brand; the legacy asset is retained only so the existing Downloader code keeps working." \
+              --notes "Development APK. Stable asset: GaloDoidoTV-AndroidTV-latest.apk"
+          else
+            gh release create android-tv-dev GaloDoidoTV-AndroidTV-latest.apk \
+              --title "GaloDoidoTV Android TV development" \
+              --notes "Development APK. Stable asset: GaloDoidoTV-AndroidTV-latest.apk" \
               --prerelease \
               --target "$GITHUB_SHA"
           fi
