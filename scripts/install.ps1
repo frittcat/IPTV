@@ -43,6 +43,7 @@ if (-not (Test-Path '.env')) {
     'HOST_COUNTRY=FR'
     'PUBLISH_MIN_SCORE=60'
     'ADULT_CONTENT=false'
+    "GALODOIDOTV_PUBLIC_URL=$publicUrl"
     "FAMILYSTREAM_PUBLIC_URL=$publicUrl"
     'ADMIN_USERNAME=admin'
     ("ADMIN_PASSWORD_HASH='" + $encoded + "'")
@@ -55,4 +56,4 @@ docker compose pull
 docker compose build
 docker compose up -d
 docker compose ps
-Write-Host 'FamilyStream iniciado. Painel: http://localhost:8080/admin/; API: http://localhost:8080/docs; Dispatcharr: http://localhost:9191'
+Write-Host 'GaloDoidoTV iniciado. Painel: http://localhost:8080/admin/; API: http://localhost:8080/docs; Dispatcharr: http://localhost:9191'
