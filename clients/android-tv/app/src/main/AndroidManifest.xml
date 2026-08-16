@@ -4,13 +4,16 @@
     <uses-feature android:name="android.hardware.touchscreen" android:required="false" />
 
     <application
+        android:name=".GaloDoidoApplication"
         android:allowBackup="false"
-        android:banner="@drawable/tv_banner"
-        android:label="FamilyStream"
-        android:theme="@style/Theme.FamilyStreamTV"
+        android:banner="@drawable/galodoidotv_logo"
+        android:icon="@drawable/galodoidotv_logo"
+        android:roundIcon="@drawable/galodoidotv_logo"
+        android:label="GaloDoidoTV"
+        android:theme="@style/Theme.GaloDoidoTV"
         android:usesCleartextTraffic="true">
         <activity
-            android:name=".MainActivity"
+            android:name=".SplashActivity"
             android:configChanges="keyboard|keyboardHidden|navigation|orientation|screenSize"
             android:exported="true"
             android:screenOrientation="landscape">
@@ -19,5 +22,10 @@
                 <category android:name="android.intent.category.LEANBACK_LAUNCHER" />
             </intent-filter>
         </activity>
+        <activity
+            android:name=".MainActivity"
+            android:configChanges="keyboard|keyboardHidden|navigation|orientation|screenSize"
+            android:exported="true"
+            android:screenOrientation="landscape" />
     </application>
 </manifest>
