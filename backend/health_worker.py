@@ -4,6 +4,7 @@ import json
 import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import Any
 
 import httpx
@@ -105,17 +106,22 @@ def _persist(result: HealthCheckResult) -> None:
         error_code=result.error_code,
     )
     status = "healthy" if result.success else "offline"
+    checked_at = datetime.now(timezone.utc).isoformat()
+    success_int = int(result.success)
+    # These columns are intentionally TEXT for SQLite/PostgreSQL compatibility.
+    # Passing CURRENT_TIMESTAMP inside CASE made PostgreSQL try to reconcile
+    # timestamptz with text, causing a DatatypeMismatch.
     if result.item_kind == "live":
         _db_execute(
-            "UPDATE streams SET status=?,last_checked=CURRENT_TIMESTAMP,last_success=CASE WHEN ?=1 THEN CURRENT_TIMESTAMP ELSE last_success END,"
+            "UPDATE streams SET status=?,last_checked=?,last_success=CASE WHEN ?=1 THEN ? ELSE last_success END,"
             "failure_count=CASE WHEN ?=1 THEN 0 ELSE failure_count+1 END WHERE id=?",
-            (status, int(result.success), int(result.success), result.stream_id),
+            (status, checked_at, success_int, checked_at, success_int, result.stream_id),
         )
     else:
         _db_execute(
-            "UPDATE vod_streams SET status=?,last_checked=CURRENT_TIMESTAMP,last_success=CASE WHEN ?=1 THEN CURRENT_TIMESTAMP ELSE last_success END,"
+            "UPDATE vod_streams SET status=?,last_checked=?,last_success=CASE WHEN ?=1 THEN ? ELSE last_success END,"
             "failure_count=CASE WHEN ?=1 THEN 0 ELSE failure_count+1 END WHERE id=?",
-            (status, int(result.success), int(result.success), result.stream_id),
+            (status, checked_at, success_int, checked_at, success_int, result.stream_id),
         )
 
 
