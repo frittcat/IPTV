@@ -2,6 +2,17 @@ plugins {
     id("com.android.application")
 }
 
+val releaseKeystorePath = System.getenv("GALODOIDOTV_KEYSTORE_PATH")
+val releaseStorePassword = System.getenv("GALODOIDOTV_KEYSTORE_PASSWORD")
+val releaseKeyAlias = System.getenv("GALODOIDOTV_KEY_ALIAS")
+val releaseKeyPassword = System.getenv("GALODOIDOTV_KEY_PASSWORD")
+val hasReleaseSigning = listOf(
+    releaseKeystorePath,
+    releaseStorePassword,
+    releaseKeyAlias,
+    releaseKeyPassword,
+).all { !it.isNullOrBlank() }
+
 android {
     namespace = "tv.familystream.client"
     compileSdk = 36
@@ -10,9 +21,34 @@ android {
         applicationId = "tv.familystream.client"
         minSdk = 23
         targetSdk = 36
-        versionCode = 30003
+        versionCode = 30004
         versionName = "0.3.0-dev"
         buildConfigField("String", "DEFAULT_SERVER_URL", "\"http://10.0.2.2:8080\"")
+        buildConfigField(
+            "String",
+            "UPDATE_MANIFEST_URL",
+            "\"https://github.com/frittcat/IPTV/releases/download/android-tv-dev/GaloDoidoTV-AndroidTV-update.json\"",
+        )
+    }
+
+    if (hasReleaseSigning) {
+        signingConfigs {
+            create("release") {
+                storeFile = file(releaseKeystorePath!!)
+                storePassword = releaseStorePassword
+                keyAlias = releaseKeyAlias
+                keyPassword = releaseKeyPassword
+            }
+        }
+    }
+
+    buildTypes {
+        getByName("release") {
+            isMinifyEnabled = false
+            if (hasReleaseSigning) {
+                signingConfig = signingConfigs.getByName("release")
+            }
+        }
     }
 
     buildFeatures {
