@@ -18,6 +18,7 @@ class SplashActivity : AppCompatActivity() {
     private var awaitingInstallPermission = false
     private var downloadStarted = false
     private var updateDialogVisible = false
+    private var routingStarted = false
 
     private val preferences by lazy { getSharedPreferences("galodoidotv", MODE_PRIVATE) }
     private val effectiveServerUrl: String by lazy {
@@ -37,9 +38,6 @@ class SplashActivity : AppCompatActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        // Resolve and persist the server before checking for updates. This makes
-        // the first ADB-provided LAN address survive normal launcher starts and
-        // future in-place APK updates.
         effectiveServerUrl
 
         window.decorView.systemUiVisibility = (
@@ -103,11 +101,48 @@ class SplashActivity : AppCompatActivity() {
     }
 
     private fun continueIfReady() {
-        if (!minimumSplashElapsed || !updateCheckFinished || pendingUpdate != null || isFinishing) return
-        val next = Intent(this, MainActivity::class.java).apply {
+        if (!minimumSplashElapsed || !updateCheckFinished || pendingUpdate != null || isFinishing || routingStarted) return
+        routingStarted = true
+        val store = SessionStore(this)
+        Thread {
+            val token = store.loadToken()
+            val validation = if (token.isNullOrBlank()) {
+                SessionValidation.INVALID
+            } else {
+                AuthApi.validateSession(effectiveServerUrl, token)
+            }
+            runOnUiThread {
+                if (isFinishing) return@runOnUiThread
+                when (validation) {
+                    SessionValidation.VALID -> openMain()
+                    SessionValidation.INVALID -> {
+                        store.clearToken()
+                        openLogin()
+                    }
+                    SessionValidation.UNAVAILABLE -> {
+                        // Keep a previously valid local token during temporary network
+                        // outages. API calls will retry once connectivity returns.
+                        if (token.isNullOrBlank()) openLogin() else openMain()
+                    }
+                }
+            }
+        }.start()
+    }
+
+    private fun openMain() {
+        startActivity(Intent(this, MainActivity::class.java).apply {
             putExtra("server_url", effectiveServerUrl)
-        }
-        startActivity(next)
+            flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK
+        })
+        finish()
+        overridePendingTransition(android.R.anim.fade_in, android.R.anim.fade_out)
+    }
+
+    private fun openLogin() {
+        startActivity(Intent(this, LoginActivity::class.java).apply {
+            putExtra("server_url", effectiveServerUrl)
+            flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK
+        })
         finish()
         overridePendingTransition(android.R.anim.fade_in, android.R.anim.fade_out)
     }
