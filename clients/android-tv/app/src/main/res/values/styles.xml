@@ -1,0 +1,9 @@
+<resources>
+    <style name="Theme.FamilyStreamTV" parent="Theme.AppCompat.NoActionBar">
+        <item name="android:fontFamily">sans</item>
+        <item name="android:windowFullscreen">true</item>
+        <item name="android:windowActionModeOverlay">true</item>
+        <item name="android:colorAccent">#FFFFFF</item>
+        <item name="android:windowBackground">#0B0D12</item>
+    </style>
+</resources>
