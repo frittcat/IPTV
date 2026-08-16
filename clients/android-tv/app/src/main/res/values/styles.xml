@@ -1,9 +1,11 @@
 <resources>
-    <style name="Theme.FamilyStreamTV" parent="Theme.AppCompat.NoActionBar">
+    <style name="Theme.GaloDoidoTV" parent="Theme.AppCompat.NoActionBar">
         <item name="android:fontFamily">sans</item>
         <item name="android:windowFullscreen">true</item>
         <item name="android:windowActionModeOverlay">true</item>
-        <item name="android:colorAccent">#FFFFFF</item>
-        <item name="android:windowBackground">#0B0D12</item>
+        <item name="android:colorAccent">#F5C400</item>
+        <item name="android:navigationBarColor">#050505</item>
+        <item name="android:statusBarColor">#050505</item>
+        <item name="android:windowBackground">#050505</item>
     </style>
 </resources>
