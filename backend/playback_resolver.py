@@ -5,6 +5,7 @@ from dataclasses import dataclass, replace
 from typing import Mapping
 from urllib.parse import urlparse
 
+from backend.health_engine import health_score_adjustment
 from backend.streaming_gateway import UpstreamCandidate
 
 
@@ -150,17 +151,12 @@ def get_profile(profile_id: str | None) -> DeviceProfile:
 
 def profile_from_headers(headers: Mapping[str, str]) -> DeviceProfile:
     base = get_profile(headers.get("x-familystream-device"))
-
     codecs_raw = headers.get("x-familystream-video-codecs")
     max_height_raw = headers.get("x-familystream-max-height")
 
     codecs = base.video_codecs
     if codecs_raw:
-        parsed = tuple(
-            token.strip().lower()
-            for token in codecs_raw.split(",")
-            if token.strip()
-        )
+        parsed = tuple(token.strip().lower() for token in codecs_raw.split(",") if token.strip())
         if parsed:
             codecs = parsed
 
@@ -172,7 +168,6 @@ def profile_from_headers(headers: Mapping[str, str]) -> DeviceProfile:
                 max_height = requested
         except ValueError:
             pass
-
     return replace(base, video_codecs=codecs, max_height=max_height)
 
 
@@ -181,6 +176,7 @@ def compatibility_score(
     profile: DeviceProfile,
     kind: str,
     traits: StreamTraits | None = None,
+    health: Mapping[str, object] | None = None,
 ) -> float:
     traits = traits or infer_traits(candidate.url)
     value = float(candidate.score)
@@ -202,19 +198,16 @@ def compatibility_score(
         value += 18.0
     if kind == "vod" and traits.protocol == "direct":
         value += 10.0
-
     if profile.prefer_hevc and traits.video_codec == "hevc":
         value += 16.0
     elif traits.video_codec in {"h264", "avc"}:
         value += 6.0
-
     if traits.height:
         value += min(traits.height, profile.max_height) / 240.0
-
-    # Measured data is more trustworthy than filename/URL hints.
     if traits.source == "probe":
         value += 4.0
 
+    value += health_score_adjustment(health)
     return value
 
 
@@ -223,8 +216,10 @@ def rank_candidates(
     profile: DeviceProfile,
     kind: str,
     technical_profiles: Mapping[str, Mapping[str, object]] | None = None,
+    health_profiles: Mapping[str, Mapping[str, object]] | None = None,
 ) -> list[UpstreamCandidate]:
     technical_profiles = technical_profiles or {}
+    health_profiles = health_profiles or {}
     return sorted(
         candidates,
         key=lambda candidate: compatibility_score(
@@ -232,6 +227,7 @@ def rank_candidates(
             profile,
             kind,
             traits_for_candidate(candidate, technical_profiles.get(candidate.id)),
+            health_profiles.get(candidate.id),
         ),
         reverse=True,
     )
@@ -242,6 +238,7 @@ def candidate_diagnostic(
     profile: DeviceProfile,
     kind: str,
     technical: Mapping[str, object] | None = None,
+    health: Mapping[str, object] | None = None,
 ) -> dict[str, object]:
     traits = traits_for_candidate(candidate, technical)
     return {
@@ -259,8 +256,7 @@ def candidate_diagnostic(
         "fps": traits.fps,
         "hdr": traits.hdr,
         "audio_channels": traits.audio_channels,
+        "health_adjustment": health_score_adjustment(health),
         "base_score": candidate.score,
-        "resolver_score": compatibility_score(candidate, profile, kind, traits),
-        # Deliberately no upstream URL or headers here: diagnostics must never
-        # become a secret/token exfiltration path.
+        "resolver_score": compatibility_score(candidate, profile, kind, traits, health),
     }
