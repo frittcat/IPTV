@@ -12,6 +12,10 @@ MASTER_PATH = Path(__file__).resolve().parents[1] / "data" / "live_master_br.jso
 def _norm(value: str | None) -> str:
     text = unicodedata.normalize("NFKD", value or "")
     text = "".join(ch for ch in text if not unicodedata.combining(ch)).lower()
+    # A plus sign is semantically meaningful in channel brands such as HBO+
+    # and SportyNet+. Preserve it as a word before punctuation is stripped so
+    # those aliases cannot collide with HBO/SportyNet.
+    text = text.replace("+", " plus ")
     return "".join(ch for ch in text if ch.isalnum())
 
 
