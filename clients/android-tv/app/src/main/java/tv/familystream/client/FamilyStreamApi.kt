@@ -90,8 +90,15 @@ internal class FamilyStreamApi(
         )
     }
 
-    fun channels(limit: Int = 300): List<Channel> {
-        val root = getObject("/api/v1/live/channels?limit=${limit.coerceIn(1, 500)}")
+    fun channels(
+        limit: Int = 300,
+        country: String? = null,
+        section: String? = null,
+    ): List<Channel> {
+        val params = mutableListOf("limit=${limit.coerceIn(1, 500)}")
+        country?.trim()?.takeIf { it.isNotBlank() }?.let { params += "country=${pathPart(it.uppercase())}" }
+        section?.trim()?.takeIf { it.isNotBlank() }?.let { params += "section=${pathPart(it)}" }
+        val root = getObject("/api/v1/live/channels?${params.joinToString("&")}")
         return parseChannels(root.optJSONArray("items"))
     }
 
