@@ -2,28 +2,43 @@ from __future__ import annotations
 
 import os
 import time
-from datetime import datetime, timezone
 from pathlib import Path
 import sys
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from backend.app import init_db, export_files, report, health_check, sync
+
+from backend.app import init_db, report
+from backend.health_worker import run_health_batch
+from backend.live_sync import fast_sync
 
 
 def run():
-    init_db(); last_live = last_vod = 0.0
-    interval = max(3600, int(os.getenv("SCHEDULER_INTERVAL_SECONDS", "3600")))
+    init_db()
+    # Initial discovery is explicit via scripts/sync-now.ps1. Starting/restarting
+    # the scheduler must not launch a second full catalog sync concurrently.
+    last_live_sync = time.time()
+    last_report = 0.0
+    interval = max(300, int(os.getenv("SCHEDULER_INTERVAL_SECONDS", "900")))
+    live_limit = max(1, min(200, int(os.getenv("HEALTH_LIVE_BATCH", "30"))))
+    vod_limit = max(1, min(100, int(os.getenv("HEALTH_VOD_BATCH", "15"))))
+
     while True:
-        now = time.time()
+        now_ts = time.time()
         try:
-            if now - last_live >= 24 * 3600:
-                os.environ.setdefault("ADMIN_PASSWORD_HASH", "")
-                # The scheduler is trusted inside the container and calls deterministic jobs directly.
-                sync.__wrapped__() if hasattr(sync, "__wrapped__") else sync()
-                last_live = now
-            health_check(20)
-            report()
+            if now_ts - last_live_sync >= 24 * 3600:
+                print(f"live sync: {fast_sync()}", flush=True)
+                last_live_sync = now_ts
+
+            summary = run_health_batch(live_limit=live_limit, vod_limit=vod_limit)
+            print(f"health batch: {summary}", flush=True)
+
+            if now_ts - last_report >= 6 * 3600:
+                report()
+                last_report = now_ts
         except Exception as exc:
-            print(f"scheduler error: {exc}", flush=True)
+            print(f"scheduler error: {type(exc).__name__}: {exc}", flush=True)
         time.sleep(interval)
 
-if __name__ == "__main__": run()
+
+if __name__ == "__main__":
+    run()
