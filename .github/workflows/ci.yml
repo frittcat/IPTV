@@ -1,4 +1,4 @@
-name: FamilyStream CI
+name: GaloDoidoTV CI
 on:
   push:
     branches: [main, v0.3-platform]
@@ -40,11 +40,11 @@ jobs:
       - uses: actions/checkout@v4
       - uses: docker/setup-buildx-action@v3
       - name: Build runtime image
-        run: docker build -t familystream-ci .
+        run: docker build -t galodoidotv-ci .
       - name: Verify ffprobe runtime dependency
-        run: docker run --rm familystream-ci ffprobe -version
+        run: docker run --rm galodoidotv-ci ffprobe -version
       - name: Verify media probe module imports
-        run: docker run --rm familystream-ci python -c "from backend.media_probe import build_ffprobe_command; print(build_ffprobe_command('http://127.0.0.1:8080/probe')[0])"
+        run: docker run --rm galodoidotv-ci python -c "from backend.media_probe import build_ffprobe_command; print(build_ffprobe_command('http://127.0.0.1:8080/probe')[0])"
 
   android-tv:
     runs-on: ubuntu-latest
@@ -62,13 +62,13 @@ jobs:
       - uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '9.4.1'
-      - name: Assemble Android TV debug APK
+      - name: Assemble GaloDoidoTV Android TV debug APK
         working-directory: clients/android-tv
         run: gradle :app:assembleDebug --no-daemon --stacktrace
-      - name: Upload Android TV debug APK
+      - name: Upload GaloDoidoTV Android TV debug APK
         uses: actions/upload-artifact@v4
         with:
-          name: familystream-android-tv-debug
+          name: galodoidotv-android-tv-debug
           path: clients/android-tv/app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
           retention-days: 14
@@ -77,13 +77,15 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          cp clients/android-tv/app/build/outputs/apk/debug/app-debug.apk GaloDoidoTV-AndroidTV-latest.apk
+          # Compatibility alias keeps the existing Downloader code 6093932 working.
           cp clients/android-tv/app/build/outputs/apk/debug/app-debug.apk FamilyStream-AndroidTV-latest.apk
           if gh release view android-tv-dev >/dev/null 2>&1; then
-            gh release upload android-tv-dev FamilyStream-AndroidTV-latest.apk --clobber
+            gh release upload android-tv-dev GaloDoidoTV-AndroidTV-latest.apk FamilyStream-AndroidTV-latest.apk --clobber
           else
-            gh release create android-tv-dev FamilyStream-AndroidTV-latest.apk \
-              --title "FamilyStream Android TV development" \
-              --notes "Development APK. The asset name stays stable so Downloader codes can keep pointing to the same URL." \
+            gh release create android-tv-dev GaloDoidoTV-AndroidTV-latest.apk FamilyStream-AndroidTV-latest.apk \
+              --title "GaloDoidoTV Android TV development" \
+              --notes "Development APK. GaloDoidoTV is the active brand; the legacy asset is retained only so the existing Downloader code keeps working." \
               --prerelease \
               --target "$GITHUB_SHA"
           fi
