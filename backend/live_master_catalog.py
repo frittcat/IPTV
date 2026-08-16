@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import unicodedata
 from functools import lru_cache
 from pathlib import Path
@@ -40,12 +41,53 @@ def _alias_index() -> dict[str, dict]:
     return result
 
 
+@lru_cache(maxsize=1)
+def _aliases_longest_first() -> tuple[tuple[str, dict], ...]:
+    return tuple(sorted(_alias_index().items(), key=lambda item: len(item[0]), reverse=True))
+
+
 def categories() -> list[str]:
     return list(master_payload().get("categories") or [])
 
 
 def match_channel(name: str | None) -> dict | None:
     return _alias_index().get(_norm(name))
+
+
+def match_channel_flexible(name: str | None) -> dict | None:
+    """Match provider display names that contain harmless region/quality decorations.
+
+    Authorized provider lineups often expose labels such as ``BR | PREMIERE 1 FHD``
+    rather than the clean brand name. Exact matching remains the first choice;
+    this fallback strips common presentation tokens and then tries longest aliases
+    first so ESPN 2 cannot collapse into ESPN and HBO Family cannot collapse into HBO.
+    """
+    direct = match_channel(name)
+    if direct is not None:
+        return direct
+
+    raw = unicodedata.normalize("NFKD", name or "")
+    raw = "".join(ch for ch in raw if not unicodedata.combining(ch)).lower()
+    raw = re.sub(
+        r"\b(br|brasil|brazil|hd|fhd|uhd|4k|8k|sd|1080p|1080i|720p|576p|480p|"
+        r"h264|h265|hevc|avc|50fps|60fps|vip)\b",
+        " ",
+        raw,
+    )
+    cleaned = _norm(raw)
+    if not cleaned:
+        return None
+    exact = _alias_index().get(cleaned)
+    if exact is not None:
+        return exact
+
+    # Substring fallback is intentionally restricted to aliases with at least
+    # five normalized characters; very short brands such as HBO/SBT must match
+    # after decoration stripping rather than matching arbitrary text.
+    for alias, target in _aliases_longest_first():
+        if len(alias) >= 5 and alias in cleaned:
+            return target
+    return None
 
 
 def decorate_channel(item: dict) -> dict:
