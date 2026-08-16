@@ -6,25 +6,19 @@ GaloDoidoTV é uma plataforma própria de Live TV, filmes e séries, com descobe
 
 ## Android TV — instalação rápida pelo Downloader
 
-Código oficial do **Downloader by AFTVnews** para a build Android TV de desenvolvimento:
+O APK oficial de desenvolvimento usa somente o nome:
 
 ```text
-6093932
+GaloDoidoTV-AndroidTV-latest.apk
 ```
 
-Short URL:
-
-```text
-https://aftv.news/6093932
-```
-
-O aplicativo instalado e toda a identidade visual ativa usam o nome **GaloDoidoTV**. O CI publica o asset principal `GaloDoidoTV-AndroidTV-latest.apk`. Para manter o código Downloader `6093932` funcionando sem precisar gerar outro código, a release também mantém temporariamente um alias de compatibilidade com o antigo nome de arquivo.
-
-URL principal atual:
+URL estável:
 
 ```text
 https://github.com/frittcat/IPTV/releases/download/android-tv-dev/GaloDoidoTV-AndroidTV-latest.apk
 ```
+
+O antigo asset `FamilyStream-AndroidTV-latest.apk` foi aposentado e não é mais publicado. O código antigo do Downloader `6093932` apontava para aquela URL antiga; portanto ele deve ser substituído por um novo código AFTVnews apontando para a URL GaloDoidoTV acima.
 
 ## Arquitetura
 
