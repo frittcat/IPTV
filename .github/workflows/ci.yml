@@ -62,6 +62,7 @@ jobs:
       - uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '9.4.1'
+
       - name: Assemble GaloDoidoTV Android TV debug APK
         working-directory: clients/android-tv
         run: gradle :app:assembleDebug --no-daemon --stacktrace
@@ -72,22 +73,81 @@ jobs:
           path: clients/android-tv/app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
           retention-days: 14
-      - name: Publish stable GaloDoidoTV APK URL
-        if: github.event_name == 'push' && github.ref == 'refs/heads/v0.3-platform'
+
+      - name: Prepare persistent release signing
+        id: signing
+        env:
+          KEYSTORE_BASE64: ${{ secrets.ANDROID_SIGNING_KEYSTORE_BASE64 }}
+          STORE_PASSWORD: ${{ secrets.ANDROID_SIGNING_STORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.ANDROID_SIGNING_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.ANDROID_SIGNING_KEY_PASSWORD }}
+        run: |
+          if [ -z "$KEYSTORE_BASE64" ] || [ -z "$STORE_PASSWORD" ] || [ -z "$KEY_ALIAS" ] || [ -z "$KEY_PASSWORD" ]; then
+            echo "available=false" >> "$GITHUB_OUTPUT"
+            echo "Persistent Android signing secrets are not configured; stable release publication is skipped."
+            exit 0
+          fi
+          KEYSTORE_PATH="$RUNNER_TEMP/galodoidotv-release.jks"
+          printf '%s' "$KEYSTORE_BASE64" | base64 --decode > "$KEYSTORE_PATH"
+          chmod 600 "$KEYSTORE_PATH"
+          echo "available=true" >> "$GITHUB_OUTPUT"
+          echo "keystore_path=$KEYSTORE_PATH" >> "$GITHUB_OUTPUT"
+
+      - name: Assemble signed GaloDoidoTV Android TV release APK
+        if: steps.signing.outputs.available == 'true'
+        working-directory: clients/android-tv
+        env:
+          GALODOIDOTV_KEYSTORE_PATH: ${{ steps.signing.outputs.keystore_path }}
+          GALODOIDOTV_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_SIGNING_STORE_PASSWORD }}
+          GALODOIDOTV_KEY_ALIAS: ${{ secrets.ANDROID_SIGNING_KEY_ALIAS }}
+          GALODOIDOTV_KEY_PASSWORD: ${{ secrets.ANDROID_SIGNING_KEY_PASSWORD }}
+        run: gradle :app:assembleRelease --no-daemon --stacktrace
+
+      - name: Build automatic update manifest
+        if: steps.signing.outputs.available == 'true'
+        run: |
+          cp clients/android-tv/app/build/outputs/apk/release/app-release.apk GaloDoidoTV-AndroidTV-latest.apk
+          python - <<'PY'
+          import hashlib
+          import json
+          import pathlib
+          import re
+
+          gradle = pathlib.Path('clients/android-tv/app/build.gradle.kts').read_text(encoding='utf-8')
+          version_code = int(re.search(r'versionCode\s*=\s*(\d+)', gradle).group(1))
+          version_name = re.search(r'versionName\s*=\s*"([^"]+)"', gradle).group(1)
+          apk = pathlib.Path('GaloDoidoTV-AndroidTV-latest.apk')
+          sha256 = hashlib.sha256(apk.read_bytes()).hexdigest()
+          payload = {
+              'version_code': version_code,
+              'version_name': version_name,
+              'required': True,
+              'apk_url': 'https://github.com/frittcat/IPTV/releases/download/android-tv-dev/GaloDoidoTV-AndroidTV-latest.apk',
+              'sha256': sha256,
+              'notes': 'Nova versão do GaloDoidoTV disponível. A atualização mantém suas configurações e substitui o aplicativo atual.',
+          }
+          pathlib.Path('GaloDoidoTV-AndroidTV-update.json').write_text(
+              json.dumps(payload, ensure_ascii=False, indent=2) + '\n',
+              encoding='utf-8',
+          )
+          print(f"update manifest versionCode={version_code} sha256={sha256}")
+          PY
+
+      - name: Publish stable GaloDoidoTV APK and updater metadata
+        if: github.event_name == 'push' && github.ref == 'refs/heads/v0.3-platform' && steps.signing.outputs.available == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          cp clients/android-tv/app/build/outputs/apk/debug/app-debug.apk GaloDoidoTV-AndroidTV-latest.apk
           if gh release view android-tv-dev >/dev/null 2>&1; then
             gh release delete-asset android-tv-dev FamilyStream-AndroidTV-latest.apk -y >/dev/null 2>&1 || true
-            gh release upload android-tv-dev GaloDoidoTV-AndroidTV-latest.apk --clobber
+            gh release upload android-tv-dev GaloDoidoTV-AndroidTV-latest.apk GaloDoidoTV-AndroidTV-update.json --clobber
             gh release edit android-tv-dev \
               --title "GaloDoidoTV Android TV development" \
-              --notes "Development APK. Stable asset: GaloDoidoTV-AndroidTV-latest.apk"
+              --notes "Signed Android TV build with in-app automatic update support."
           else
-            gh release create android-tv-dev GaloDoidoTV-AndroidTV-latest.apk \
+            gh release create android-tv-dev GaloDoidoTV-AndroidTV-latest.apk GaloDoidoTV-AndroidTV-update.json \
               --title "GaloDoidoTV Android TV development" \
-              --notes "Development APK. Stable asset: GaloDoidoTV-AndroidTV-latest.apk" \
+              --notes "Signed Android TV build with in-app automatic update support." \
               --prerelease \
               --target "$GITHUB_SHA"
           fi
