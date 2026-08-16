@@ -37,6 +37,18 @@ PASSTHROUGH_REQUEST_HEADERS = {
     "user-agent",
 }
 
+# Only transport/seek validators supplied by the playback client are allowed to
+# replace values already supplied by the provider adapter. Provider User-Agent,
+# Referer and Accept headers must remain authoritative because many IPTV origins
+# reject playback when those values change between health-check and real GET.
+CLIENT_OVERRIDE_REQUEST_HEADERS = {
+    "if-match",
+    "if-none-match",
+    "if-modified-since",
+    "if-unmodified-since",
+    "range",
+}
+
 
 @dataclass(slots=True)
 class UpstreamCandidate:
@@ -90,14 +102,15 @@ def request_headers_for_upstream(
     """
     result = dict(provider_headers or {})
     for key, value in (client_headers or {}).items():
-        if key.lower() in PASSTHROUGH_REQUEST_HEADERS:
-            # Preserve conventional header spelling where possible while allowing
-            # clients to override seek/validator headers for the current request.
-            existing = next((k for k in result if k.lower() == key.lower()), None)
-            if existing:
+        lower = key.lower()
+        if lower not in PASSTHROUGH_REQUEST_HEADERS:
+            continue
+        existing = next((k for k in result if k.lower() == lower), None)
+        if existing:
+            if lower in CLIENT_OVERRIDE_REQUEST_HEADERS:
                 result[existing] = value
-            else:
-                result[key] = value
+        else:
+            result[key] = value
     return result
 
 
@@ -121,7 +134,7 @@ def rewrite_hls_manifest(
     upstream_url: str,
     proxy_url: Callable[[str], str],
 ) -> str:
-    """Rewrite every HLS URI so playback remains inside FamilyStream Gateway.
+    """Rewrite every HLS URI so playback remains inside GaloDoidoTV Gateway.
 
     Handles normal media/variant lines plus URI="..." attributes used by keys,
     maps, alternate audio/subtitles and initialization segments.
