@@ -1,8 +1,8 @@
-$ErrorActionPreference = 'Stop'
-
 param(
   [string]$ServerIp = ''
 )
+
+$ErrorActionPreference = 'Stop'
 
 if (-not (Test-Path '.env')) { throw '.env não encontrado. Execute scripts\install.ps1 primeiro.' }
 if (-not (Get-Command docker -ErrorAction SilentlyContinue)) { throw 'Docker Desktop não foi encontrado.' }
