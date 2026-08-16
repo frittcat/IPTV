@@ -7,8 +7,9 @@ import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from backend.app import init_db, report, sync
+from backend.app import init_db, report
 from backend.health_worker import run_health_batch
+from backend.live_sync import fast_sync
 
 
 def run():
@@ -20,21 +21,18 @@ def run():
     vod_limit = max(1, min(100, int(os.getenv("HEALTH_VOD_BATCH", "15"))))
 
     while True:
-        now = time.time()
+        now_ts = time.time()
         try:
-            # Keep source discovery/sync independent from health rotation. Existing
-            # stream state is no longer reset by the health worker itself.
-            if now - last_live_sync >= 24 * 3600:
-                os.environ.setdefault("ADMIN_PASSWORD_HASH", "")
-                sync.__wrapped__() if hasattr(sync, "__wrapped__") else sync()
-                last_live_sync = now
+            if now_ts - last_live_sync >= 24 * 3600:
+                print(f"live sync: {fast_sync()}", flush=True)
+                last_live_sync = now_ts
 
             summary = run_health_batch(live_limit=live_limit, vod_limit=vod_limit)
             print(f"health batch: {summary}", flush=True)
 
-            if now - last_report >= 6 * 3600:
+            if now_ts - last_report >= 6 * 3600:
                 report()
-                last_report = now
+                last_report = now_ts
         except Exception as exc:
             print(f"scheduler error: {type(exc).__name__}: {exc}", flush=True)
         time.sleep(interval)
