@@ -4,11 +4,22 @@ if (-not (Test-Path '.env')) {
   $postgres = [Guid]::NewGuid().ToString('N') + [Guid]::NewGuid().ToString('N').Substring(0,8)
   $adminPassword = [Guid]::NewGuid().ToString('N')
   $salt = New-Object byte[] 16
-  [System.Security.Cryptography.RandomNumberGenerator]::Fill($salt)
+  $rng = [System.Security.Cryptography.RandomNumberGenerator]::Create()
+  try {
+    $rng.GetBytes($salt)
+  } finally {
+    $rng.Dispose()
+  }
   $iterations = 310000
   $derive = New-Object System.Security.Cryptography.Rfc2898DeriveBytes($adminPassword, $salt, $iterations, [System.Security.Cryptography.HashAlgorithmName]::SHA256)
-  $hash = $derive.GetBytes(32)
-  $encoded = 'pbkdf2_sha256$' + $iterations + '$' + ([Convert]::ToHexString($salt).ToLower()) + '$' + ([Convert]::ToHexString($hash).ToLower())
+  try {
+    $hash = $derive.GetBytes(32)
+  } finally {
+    $derive.Dispose()
+  }
+  $saltHex = ([BitConverter]::ToString($salt)).Replace('-', '').ToLowerInvariant()
+  $hashHex = ([BitConverter]::ToString($hash)).Replace('-', '').ToLowerInvariant()
+  $encoded = 'pbkdf2_sha256$' + $iterations + '$' + $saltHex + '$' + $hashHex
   @(
     'POSTGRES_DB=familystream'
     'POSTGRES_USER=familystream'
